@@ -24,14 +24,8 @@ def test_parse_json_rejects_garbage():
         llm.parse_json("no hay json aquí")
 
 
-def test_none_api_key_means_local_provider(monkeypatch):
-    from app import config
+@pytest.mark.parametrize(("key", "expected"), [("none", "fake"), ("", "fake"), (" NONE ", "fake"), ("AIza-real", "gemini")])
+def test_api_key_none_means_local_provider(key, expected):
+    from app.config import Settings
 
-    monkeypatch.setenv("LLM_PROVIDER", "gemini")
-    monkeypatch.setenv("LLM_API_KEY", "none")
-    config.reset_settings()
-    try:
-        assert config.get_settings().effective_provider == "fake"
-    finally:
-        monkeypatch.setenv("LLM_API_KEY", "")
-        config.reset_settings()
+    assert Settings(llm_provider="gemini", llm_api_key=key).effective_provider == expected
