@@ -43,7 +43,8 @@ class Settings:
     def effective_provider(self) -> str:
         if self.llm_provider == "ollama":
             return "ollama"
-        if not self.llm_api_key or self.llm_provider == "fake":
+        # "none" es lo que pone el Terraform del lab cuando no hay llave (los secretos de ECS no pueden ir vacíos).
+        if self.llm_api_key.strip().lower() in ("", "none") or self.llm_provider == "fake":
             return "fake"
         return self.llm_provider
 

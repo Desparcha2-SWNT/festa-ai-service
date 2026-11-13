@@ -22,3 +22,16 @@ def test_parse_json_strips_code_fences():
 def test_parse_json_rejects_garbage():
     with pytest.raises(llm.LLMError):
         llm.parse_json("no hay json aquí")
+
+
+def test_none_api_key_means_local_provider(monkeypatch):
+    from app import config
+
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("LLM_API_KEY", "none")
+    config.reset_settings()
+    try:
+        assert config.get_settings().effective_provider == "fake"
+    finally:
+        monkeypatch.setenv("LLM_API_KEY", "")
+        config.reset_settings()
