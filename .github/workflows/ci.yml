@@ -1,0 +1,74 @@
+# CI de festa-ai-service (RF8, RF9).
+# 1) Escaneo de secretos y vulnerabilidades, y CodeQL (Python): workflow reutilizable de la organización.
+# 2) Linter (ruff) y pruebas (pytest, con MongoDB real y los contratos de festa-infra).
+name: CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  seguridad:
+    uses: Desparcha2-SWNT/.github/.github/workflows/ci-reusable.yml@main
+    permissions:
+      contents: read
+      security-events: write
+    with:
+      stack: none
+      enable-codeql: true
+      codeql-language: python
+
+  python:
+    name: Linter y pruebas (Python 3.12)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+    services:
+      mongo:
+        image: mongo:7.0
+        ports: ["27017:27017"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Descargar contratos de festa-infra
+        uses: actions/checkout@v4
+        with:
+          repository: Desparcha2-SWNT/festa-infra
+          ref: develop
+          path: .festa-infra
+          sparse-checkout: contracts
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      - name: Linter (ruff)
+        run: ruff check app tests
+
+      - name: Pruebas
+        run: python -m pytest -q --junitxml=test-results/junit.xml
+        env:
+          FESTA_CONTRACTS_DIR: ${{ github.workspace }}/.festa-infra/contracts
+          TEST_MONGO_URL: mongodb://localhost:27017/ai_test
+
+      - name: Publicar resultados de pruebas en el PR
+        if: always()
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: test-results/junit.xml
+          check_name: Pruebas pytest
+          include_passed: true
