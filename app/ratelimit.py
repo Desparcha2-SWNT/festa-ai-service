@@ -27,11 +27,12 @@ async def close():
 _local: dict[str, int] = {}
 
 
-async def hit(user_id: str, limit: int | None = None) -> tuple[bool, int]:
-    """Cuenta una solicitud. Devuelve (permitida, segundos hasta la próxima ventana)."""
-    limit = limit or get_settings().chat_rate_limit_per_min
+async def hit(user_id: str, limit: int | None = None, scope: str = "chat") -> tuple[bool, int]:
+    """Cuenta una solicitud en el ámbito dado (chat o descriptions). Devuelve (permitida, segundos hasta la próxima ventana)."""
+    if limit is None:
+        limit = get_settings().chat_rate_limit_per_min if scope == "chat" else get_settings().description_rate_limit_per_min
     window = int(time.time() // 60)
-    key = f"ai:chat:{user_id}:{window}"
+    key = f"ai:{scope}:{user_id}:{window}"
     retry_after = 60 - int(time.time() % 60)
     if _redis is not None:
         count = await _redis.incr(key)

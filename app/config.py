@@ -35,6 +35,10 @@ class Settings:
     llm_timeout_s: float = float(os.environ.get("LLM_TIMEOUT_SECONDS", "30"))
     # RNF8: límite de mensajes de chat por usuario por minuto (5–20).
     chat_rate_limit_per_min: int = int(os.environ.get("AI_CHAT_RATE_LIMIT_PER_MIN", "10"))
+    # Descripciones: cada una cuesta una llamada al LLM, así que tiene su propio límite por usuario.
+    description_rate_limit_per_min: int = int(os.environ.get("AI_DESCRIPTION_RATE_LIMIT_PER_MIN", "5"))
+    # Tope de llamadas simultáneas al proveedor en este proceso (control de costo y de cuota).
+    llm_max_concurrency: int = int(os.environ.get("AI_LLM_MAX_CONCURRENCY", "4"))
     # Cuántos eventos candidatos se le pasan al modelo en cada turno.
     chat_max_candidates: int = int(os.environ.get("AI_CHAT_MAX_CANDIDATES", "25"))
     chat_history_turns: int = int(os.environ.get("AI_CHAT_HISTORY_TURNS", "8"))

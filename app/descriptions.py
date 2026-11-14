@@ -10,7 +10,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import llm
+from . import llm, ratelimit
 from .auth import Principal, current_user
 from .config import get_settings
 from .db import get_db
@@ -74,6 +74,11 @@ async def generate_description(body: DescriptionRequest, request: Request, user:
     existing = await db.descriptions.find_one({"requestedBy": user.user_id, "draftId": body.draftId})
     if existing:
         return DescriptionResponse(draftId=body.draftId, description=existing["text"], cached=True, provider=existing["provider"], model=existing["model"])
+
+    # Cada descripción nueva es una llamada al LLM: se limita por usuario (RNF8). Lo ya guardado no cuesta.
+    allowed, retry_after = await ratelimit.hit(user.user_id, scope="descriptions")
+    if not allowed:
+        raise HTTPException(status_code=429, detail="vas muy rápido, espera un momento", headers={"Retry-After": str(retry_after)})
 
     merchant = None
     if body.merchantId:

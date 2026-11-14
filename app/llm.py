@@ -5,6 +5,7 @@ Todos devuelven un `LLMResult` con el texto y los tokens usados (para el costo d
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -30,7 +31,23 @@ class LLMResult:
 Message = dict  # {"role": "user" | "assistant", "content": str}
 
 
+_slots: asyncio.Semaphore | None = None
+
+
+def _semaphore() -> asyncio.Semaphore:
+    # Tope de llamadas simultáneas al proveedor en este proceso: limita costo y cuota.
+    global _slots
+    if _slots is None:
+        _slots = asyncio.Semaphore(get_settings().llm_max_concurrency)
+    return _slots
+
+
 async def complete(system: str, messages: list[Message], model: str, *, json_output: bool = False, max_tokens: int = 1024) -> LLMResult:
+    async with _semaphore():
+        return await _complete(system, messages, model, json_output=json_output, max_tokens=max_tokens)
+
+
+async def _complete(system: str, messages: list[Message], model: str, *, json_output: bool, max_tokens: int) -> LLMResult:
     settings = get_settings()
     provider = settings.effective_provider
     try:
