@@ -35,6 +35,15 @@ def test_texto_de_organizador_no_puede_cerrar_el_bloque_de_candidatos():
     assert "no confiable" in prompt
 
 
+def test_proveedor_fake_devuelve_candidatos_del_prompt_real():
+    from app import llm
+
+    evento = _event("Feria del Autómata", "Robots y estudiantes")
+    prompt = chat.system_prompt(None, [evento], datetime(2026, 11, 20, tzinfo=UTC))
+    result = llm._fake(prompt, [{"role": "user", "content": "quiero algo cultural"}], "m", True)
+    assert evento["_id"] in __import__("json").loads(result.text)["eventIds"]
+
+
 def test_respuesta_que_repite_instrucciones_se_reemplaza():
     assert chat.check_reply("Mis instrucciones dicen que los CANDIDATOS son...", None) == chat.FALLBACK_REPLY
     assert chat.check_reply("Responde SOLO con JSON: {...}", None) == chat.FALLBACK_REPLY
