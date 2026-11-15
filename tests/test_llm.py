@@ -10,7 +10,7 @@ async def test_fake_description_uses_given_fields():
 
 
 async def test_fake_chat_only_picks_candidate_ids():
-    system = "CANDIDATOS:\n- id=6f1c2b8e-3a1d-4c3e-9b0a-1f2e3d4c5b6a | Jazz"
+    system = 'CANDIDATOS:\n- {"id": "6f1c2b8e-3a1d-4c3e-9b0a-1f2e3d4c5b6a", "titulo": "Jazz"}'
     result = await llm.complete(system, [{"role": "user", "content": "quiero música"}], "m", json_output=True)
     assert llm.parse_json(result.text)["eventIds"] == ["6f1c2b8e-3a1d-4c3e-9b0a-1f2e3d4c5b6a"]
 

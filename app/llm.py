@@ -150,7 +150,8 @@ def _fake(system: str, messages: list[Message], model: str, json_output: bool) -
     """Respuestas deterministas y razonables sin llamar a nadie (desarrollo, pruebas, demo sin llave)."""
     last = messages[-1]["content"] if messages else ""
     if "CANDIDATOS" in system:
-        ids = re.findall(r"id=([0-9a-f-]{36})", system)[:3]
+        # Los candidatos van como JSON por línea (ver chat.system_prompt): "id": "<uuid>".
+        ids = re.findall(r'"id": "([0-9a-f-]{36})"', system)[:3]
         reply = (
             "¡Tengo algunos planes que te pueden gustar! Te dejo los que mejor encajan con lo que me contaste."
             if ids
