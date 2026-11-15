@@ -149,9 +149,11 @@ async def _anthropic(key, system, messages, model, max_tokens) -> LLMResult:
 def _fake(system: str, messages: list[Message], model: str, json_output: bool) -> LLMResult:
     """Respuestas deterministas y razonables sin llamar a nadie (desarrollo, pruebas, demo sin llave)."""
     last = messages[-1]["content"] if messages else ""
-    if "CANDIDATOS" in system:
-        # Los candidatos van como JSON por línea (ver chat.system_prompt): "id": "<uuid>".
-        ids = re.findall(r'"id": "([0-9a-f-]{36})"', system)[:3]
+    # Los candidatos viajan en un mensaje de datos (ver chat.context_message), no en el system prompt.
+    context = system + "\n" + "\n".join(m["content"] for m in messages)
+    if "CANDIDATOS" in context:
+        # Los candidatos van como JSON por línea: "id": "<uuid>".
+        ids = re.findall(r'"id": "([0-9a-f-]{36})"', context)[:3]
         reply = (
             "¡Tengo algunos planes que te pueden gustar! Te dejo los que mejor encajan con lo que me contaste."
             if ids
