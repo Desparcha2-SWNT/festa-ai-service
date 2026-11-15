@@ -37,7 +37,9 @@ def test_texto_de_organizador_no_puede_cerrar_el_bloque_de_candidatos():
 
 def test_datos_de_organizadores_no_van_en_el_system_prompt():
     evento = _event("Título único xyz", "Descripción única abc")
+    contexto = chat.context_message(None, [evento])
     system = chat.system_prompt(datetime(2026, 11, 20, tzinfo=UTC))
+    assert "xyz" in contexto and "abc" in contexto
     assert "xyz" not in system and "abc" not in system
     assert "no confiable" in system
 
