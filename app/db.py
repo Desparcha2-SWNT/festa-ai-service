@@ -1,5 +1,8 @@
 """MongoDB (ai_db) con el cliente asíncrono de pymongo."""
+from contextlib import suppress
+
 from pymongo import ASCENDING, DESCENDING, AsyncMongoClient
+from pymongo.errors import OperationFailure
 
 from .config import get_settings
 
@@ -22,7 +25,16 @@ async def ensure_indexes(db) -> None:
     await db.processed_events.create_index("processedAt", expireAfterSeconds=30 * 24 * 3600)
     await db.catalog.create_index([("status", ASCENDING), ("startsAt", ASCENDING)])
     await db.catalog.create_index([("location", "2dsphere")])
-    await db.descriptions.create_index([("requestedBy", ASCENDING), ("draftId", ASCENDING)], unique=True)
+    # Único solo cuando hay quien pidió la descripción: al borrar una cuenta, sus descripciones quedan con
+    # requestedBy null y no deben chocar entre sí. El índice anterior (sin filtro) se elimina si existe.
+    with suppress(OperationFailure):
+        await db.descriptions.drop_index("requestedBy_1_draftId_1")
+    await db.descriptions.create_index(
+        [("requestedBy", ASCENDING), ("draftId", ASCENDING)],
+        unique=True,
+        name="requestedBy_draftId_unique",
+        partialFilterExpression={"requestedBy": {"$type": "string"}},
+    )
     await db.chat_sessions.create_index([("userId", ASCENDING), ("updatedAt", DESCENDING)])
     # Historial de chat: se borra solo a los 30 días (minimización de datos, Ley 1581).
     await db.chat_sessions.create_index("updatedAt", expireAfterSeconds=30 * 24 * 3600)

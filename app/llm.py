@@ -59,7 +59,7 @@ async def _complete(system: str, messages: list[Message], model: str, *, json_ou
             if provider == "openai":
                 return await _openai(http, settings.llm_api_key, system, messages, model, json_output, max_tokens)
             if provider == "ollama":
-                return await _ollama(http, settings.ollama_url, system, messages, model, json_output)
+                return await _ollama(http, settings.ollama_url, system, messages, model, json_output, max_tokens)
         if provider == "anthropic":
             return await _anthropic(settings.llm_api_key, system, messages, model, max_tokens)
     except LLMError:
@@ -108,8 +108,15 @@ async def _openai(http, key, system, messages, model, json_output, max_tokens) -
     return LLMResult(data["choices"][0]["message"]["content"] or "", "openai", model, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
 
 
-async def _ollama(http, base_url, system, messages, model, json_output) -> LLMResult:
-    body = {"model": model, "stream": False, "messages": [{"role": "system", "content": system}, *messages], **({"format": "json"} if json_output else {})}
+async def _ollama(http, base_url, system, messages, model, json_output, max_tokens) -> LLMResult:
+    # num_predict es el tope de tokens de salida en Ollama (equivale a maxOutputTokens de Gemini).
+    body = {
+        "model": model,
+        "stream": False,
+        "messages": [{"role": "system", "content": system}, *messages],
+        "options": {"num_predict": max_tokens},
+        **({"format": "json"} if json_output else {}),
+    }
     res = await http.post(f"{base_url.rstrip('/')}/api/chat", json=body)
     if res.status_code != 200:
         raise LLMError(f"ollama {res.status_code}: {res.text[:300]}")

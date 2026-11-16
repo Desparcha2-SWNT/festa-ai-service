@@ -93,8 +93,12 @@ async def test_rnf8_rate_limit(mongo_db, monkeypatch):
     assert codes[:10] == [200] * 10 and codes[10] == 429
 
 
-async def test_account_deleted_removes_history(mongo_db):
+async def test_account_deleted_removes_history(mongo_db, monkeypatch):
+    # El límite por minuto no debe contaminar esta prueba: se reinicia antes de crear la conversación.
+    monkeypatch.setattr(ratelimit, "_local", {})
     async with client() as c:
-        await c.post("/ai/chat", json={"message": "hola"})
+        res = await c.post("/ai/chat", json={"message": "hola"})
+    assert res.status_code == 200, "la conversación debe existir antes de borrar la cuenta"
+    assert await mongo_db.chat_sessions.count_documents({"userId": USER}) == 1
     await HANDLERS["account.deleted"]({"userId": USER, "deletedAt": "2026-11-01T00:00:00Z"}, {}, mongo_db)
     assert await mongo_db.chat_sessions.count_documents({"userId": USER}) == 0
