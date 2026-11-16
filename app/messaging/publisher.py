@@ -9,6 +9,7 @@ from pymongo import ReturnDocument
 
 from ..config import get_settings
 from ..db import get_db
+from .pending import relay_stuck
 
 log = logging.getLogger("ai-service.outbox")
 
@@ -63,6 +64,8 @@ async def publish_pending(channel, db=None, batch: int = 50) -> int:
 async def run_publisher(channel, stop: asyncio.Event, interval_s: float = 2.0) -> None:
     while not stop.is_set():
         try:
+            # Primero lo que quedó guardado junto a su resultado sin llegar al outbox (ver pending.py).
+            await relay_stuck(get_db())
             await publish_pending(channel)
         except Exception:  # noqa: BLE001
             log.exception("fallo publicando el outbox, se reintenta")

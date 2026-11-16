@@ -18,7 +18,7 @@ from .auth import Principal, current_user
 from .config import get_settings
 from .db import get_db
 from .ids import UUID_PATTERN, canonical
-from .messaging.outbox import enqueue
+from .messaging.pending import pending_event, relay
 
 router = APIRouter(prefix="/ai")
 
@@ -196,26 +196,7 @@ async def chat(body: ChatRequest, request: Request, response: Response, user: Pr
     by_id = {e["_id"]: e for e in candidates}
     chosen = [i for i in dict.fromkeys(str(x).lower() for x in parsed.get("eventIds") or []) if i in by_id][:5]
 
-    try:
-        # El dueño va en el filtro: si otra cuenta creó este sessionId entre la lectura y la escritura, el
-        # upsert choca con E11000 y no se escribe en su conversación.
-        await db.chat_sessions.update_one(
-            {"_id": session_id, "userId": user.user_id},
-            {
-            "$setOnInsert": {"createdAt": now},
-            "$set": {"updatedAt": now},
-            "$push": {"messages": {"$each": [
-                {"role": "user", "content": body.message, "at": now},
-                {"role": "assistant", "content": json.dumps({"reply": reply, "eventIds": chosen}, ensure_ascii=False), "at": now},
-            ], "$slice": -40}},
-            },
-            upsert=True,
-        )
-    except DuplicateKeyError as err:
-        raise HTTPException(status_code=404, detail="conversación no encontrada") from err
-
-    await enqueue(
-        db,
+    event = pending_event(
         exchange="festa.ai",
         routing_key="recommendation.served",
         payload={
@@ -230,6 +211,25 @@ async def chat(body: ChatRequest, request: Request, response: Response, user: Pr
         },
         correlation_id=request.headers.get("x-correlation-id"),
     )
+    try:
+        # El dueño va en el filtro: si otra cuenta creó este sessionId entre la lectura y la escritura, el
+        # upsert choca con E11000 y no se escribe en su conversación. El turno y su recommendation.served
+        # (con el conteo de tokens) van en la misma escritura atómica: no puede quedar uno sin el otro.
+        await db.chat_sessions.update_one(
+            {"_id": session_id, "userId": user.user_id},
+            {
+            "$setOnInsert": {"createdAt": now},
+            "$set": {"updatedAt": now},
+            "$push": {"messages": {"$each": [
+                {"role": "user", "content": body.message, "at": now},
+                {"role": "assistant", "content": json.dumps({"reply": reply, "eventIds": chosen}, ensure_ascii=False), "at": now},
+            ], "$slice": -40}, "pendingEvents": event},
+            },
+            upsert=True,
+        )
+    except DuplicateKeyError as err:
+        raise HTTPException(status_code=404, detail="conversación no encontrada") from err
+    await relay(db, "chat_sessions", session_id, [event])
 
     return ChatResponse(
         sessionId=session_id,

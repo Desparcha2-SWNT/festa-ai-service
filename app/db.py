@@ -36,6 +36,9 @@ async def ensure_indexes(db) -> None:
         partialFilterExpression={"requestedBy": {"$type": "string"}},
     )
     await db.chat_sessions.create_index([("userId", ASCENDING), ("updatedAt", DESCENDING)])
+    # Mensajes guardados junto a su resultado que aún no pasan al outbox (ver messaging/pending.py).
+    for collection in ("descriptions", "chat_sessions"):
+        await db[collection].create_index("pendingEvents.at", sparse=True)
     # Historial de chat: se borra solo a los 30 días (minimización de datos, Ley 1581).
     await db.chat_sessions.create_index("updatedAt", expireAfterSeconds=30 * 24 * 3600)
 

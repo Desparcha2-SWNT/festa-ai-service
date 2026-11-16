@@ -16,8 +16,12 @@ def deterministic_uuid(text: str) -> str:
     return str(uuid.UUID(bytes=bytes(raw)))
 
 
-async def enqueue(db, *, exchange: str, routing_key: str, payload: dict, correlation_id=None, causation_id=None, key: str = "") -> str:
-    event_id = deterministic_uuid(f"{causation_id}:{routing_key}:{key}") if causation_id else str(uuid.uuid4())
+async def enqueue(
+    db, *, exchange: str, routing_key: str, payload: dict, correlation_id=None, causation_id=None, key: str = "", event_id: str | None = None
+) -> str:
+    """Upsert por _id: con `event_id` fijo (ver pending.py) repetir el enqueue no duplica el mensaje."""
+    if event_id is None:
+        event_id = deterministic_uuid(f"{causation_id}:{routing_key}:{key}") if causation_id else str(uuid.uuid4())
     await db.outbox.update_one(
         {"_id": event_id},
         {

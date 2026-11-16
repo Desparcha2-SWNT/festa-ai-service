@@ -19,7 +19,8 @@ from .auth import Principal, current_user
 from .config import get_settings
 from .db import get_db
 from .ids import UUID_PATTERN, canonical
-from .messaging.outbox import enqueue
+from .messaging.outbox import deterministic_uuid
+from .messaging.pending import pending_event, relay
 
 router = APIRouter(prefix="/ai")
 
@@ -93,6 +94,10 @@ async def generate_description(body: DescriptionRequest, request: Request, user:
 
     existing = await db.descriptions.find_one(key)
     if existing and existing.get("status", "done") == "done":
+        # Si una petición anterior guardó la descripción pero murió antes de copiar su mensaje al outbox,
+        # se completa aquí (además del barrido del publicador).
+        if existing.get("pendingEvents"):
+            await relay(db, "descriptions", existing["_id"], existing["pendingEvents"])
         return _cached(existing, draft)
     if existing and existing["claimedAt"] > now - timedelta(seconds=CLAIM_SECONDS):
         raise _busy()  # otra petición la está generando ahora mismo
@@ -142,19 +147,9 @@ async def generate_description(body: DescriptionRequest, request: Request, user:
         await db.descriptions.delete_one(mine)
         raise HTTPException(status_code=503, detail="la IA no devolvió una descripción")
 
-    finished = await db.descriptions.update_one(
-        mine,
-        {
-            "$set": {"status": "done", "text": text, "provider": result.provider, "model": result.model,
-                     "inputTokens": result.input_tokens, "outputTokens": result.output_tokens},
-            "$unset": {"claimedAt": "", "claimToken": ""},
-        },
-    )
-    if finished.matched_count == 0:
-        # Nuestra reclamación venció y otra petición ya la retomó: no se sobrescribe su resultado.
-        raise _busy()
-    await enqueue(
-        db,
+    event = pending_event(
+        # Id estable por solicitud: si el mensaje se copia dos veces al outbox (petición + barrido), es uno solo.
+        event_id=deterministic_uuid(f"description.generated:{request_id}"),
         exchange="festa.ai",
         routing_key="description.generated",
         payload={
@@ -170,4 +165,19 @@ async def generate_description(body: DescriptionRequest, request: Request, user:
         },
         correlation_id=request.headers.get("x-correlation-id"),
     )
+    # La descripción y su mensaje se guardan en la MISMA escritura (un documento = atómico): no puede quedar
+    # una descripción en caché sin su description.generated.
+    finished = await db.descriptions.update_one(
+        mine,
+        {
+            "$set": {"status": "done", "text": text, "provider": result.provider, "model": result.model,
+                     "inputTokens": result.input_tokens, "outputTokens": result.output_tokens},
+            "$unset": {"claimedAt": "", "claimToken": ""},
+            "$push": {"pendingEvents": event},
+        },
+    )
+    if finished.matched_count == 0:
+        # Nuestra reclamación venció y otra petición ya la retomó: no se sobrescribe su resultado.
+        raise _busy()
+    await relay(db, "descriptions", request_id, [event])
     return DescriptionResponse(draftId=draft, description=text, cached=False, provider=result.provider, model=result.model)

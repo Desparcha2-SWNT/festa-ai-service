@@ -3,6 +3,11 @@
 Firma: (data, envelope, db). Sin transacciones (Mongo sin réplica), así que cada escritura se
 condiciona por versión o por marca de tiempo: una entrega atrasada no pisa una más reciente, y un
 estado terminal (cancelado, expirado) no vuelve a «publicado» aunque llegue una foto vieja.
+
+Por eso el marcador processed_events puede ir aparte del efecto (consumer.py): si el handler aplicó
+y falló el marcador, el reintento repite el mismo handler y el resultado es idéntico. Cada efecto es
+un valor fijo (cancelado, expirado, agotado, lápida, borrado) o está condicionado por version,
+updatedAt, grantedAt o revokedAt. tests/test_replay.py reaplica cada handler después de uno más nuevo.
 """
 from datetime import UTC, datetime
 
@@ -110,10 +115,14 @@ async def _profile_updated(d, e, db):
 
 
 async def _merchant_updated(d, e, db):
-    await db.merchants.update_one(
-        {"_id": d["merchantId"]},
-        {"$set": {"userId": d["userId"], "businessName": d["businessName"], "category": d["category"], "place": d["place"]}},
-        upsert=True,
+    """merchant.updated: el más reciente (por updatedAt, obligatorio en el contrato) gana."""
+    at = _dt(d["updatedAt"])
+    allowed = {"$or": [{"updatedAt": {"$exists": False}}, {"updatedAt": {"$lt": at}}]}
+    await _upsert_if_allowed(
+        db.merchants,
+        d["merchantId"],
+        allowed,
+        {"$set": {"userId": d["userId"], "businessName": d["businessName"], "category": d["category"], "place": d["place"], "updatedAt": at}},
     )
 
 
