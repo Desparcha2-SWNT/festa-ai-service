@@ -102,3 +102,19 @@ async def test_account_deleted_removes_history(mongo_db, monkeypatch):
     assert await mongo_db.chat_sessions.count_documents({"userId": USER}) == 1
     await HANDLERS["account.deleted"]({"userId": USER, "deletedAt": "2026-11-01T00:00:00Z"}, {}, mongo_db)
     assert await mongo_db.chat_sessions.count_documents({"userId": USER}) == 0
+
+
+async def test_perfil_y_consentimiento_tardios_no_recrean_datos_tras_borrar_cuenta(mongo_db):
+    # Redelivery de profile.updated y de consentimiento después de account.deleted: no deben volver a crear preferencias.
+    await HANDLERS["profile.updated"](
+        {"userId": USER, "displayName": "Ana", "interests": ["musical"], "updatedAt": "2026-11-01T10:00:00Z"}, {}, mongo_db
+    )
+    assert await mongo_db.user_prefs.count_documents({"_id": USER}) == 1
+    await HANDLERS["account.deleted"]({"userId": USER, "deletedAt": "2026-11-01T11:00:00Z"}, {}, mongo_db)
+    assert await mongo_db.user_prefs.count_documents({"_id": USER}) == 0
+
+    await HANDLERS["profile.updated"](
+        {"userId": USER, "displayName": "Ana", "interests": ["musical"], "updatedAt": "2026-11-01T12:00:00Z"}, {}, mongo_db
+    )
+    await HANDLERS["location_consent.granted"]({"userId": USER, "grantedAt": "2026-11-01T12:30:00Z"}, {}, mongo_db)
+    assert await mongo_db.user_prefs.count_documents({"_id": USER}) == 0

@@ -4,7 +4,7 @@ Firma: (data, envelope, db). Sin transacciones (Mongo sin réplica), así que ca
 condiciona por versión o por marca de tiempo: una entrega atrasada no pisa una más reciente, y un
 estado terminal (cancelado, expirado) no vuelve a «publicado» aunque llegue una foto vieja.
 """
-from datetime import datetime
+from datetime import UTC, datetime
 
 from pymongo.errors import DuplicateKeyError
 
@@ -68,9 +68,14 @@ async def _sold_out(db, event_id: str):
     await db.catalog.update_one({"_id": event_id}, {"$set": {"soldOut": True}}, upsert=True)
 
 
+async def _is_deleted(db, user_id: str) -> bool:
+    """Lápida de cuenta eliminada: una entrega tardía de su perfil o consentimiento no la vuelve a crear."""
+    return await db.deleted_accounts.find_one({"_id": user_id}) is not None
+
+
 async def _consent(db, user_id: str | None, at_iso: str, granted: bool):
     """RNF5: el último cambio de consentimiento gana, por fecha del evento y no por orden de llegada."""
-    if not user_id:
+    if not user_id or await _is_deleted(db, user_id):
         return
     at = _dt(at_iso)
     allowed = {"$or": [{"locationConsentAt": {"$exists": False}}, {"locationConsentAt": {"$lt": at}}]}
@@ -80,6 +85,11 @@ async def _consent(db, user_id: str | None, at_iso: str, granted: bool):
 async def _account_deleted(d, e, db):
     # Ley 1581: borra historial de chat y preferencias. Las descripciones generadas son contenido
     # del evento, no datos personales: se conservan sin el id de quien las pidió.
+    # La lápida va primero y solo guarda el id (sin datos personales) para que un perfil o consentimiento
+    # tardío no recree preferencias después del borrado.
+    await db.deleted_accounts.update_one(
+        {"_id": d["userId"]}, {"$setOnInsert": {"deletedAt": datetime.now(UTC)}}, upsert=True
+    )
     await db.chat_sessions.delete_many({"userId": d["userId"]})
     await db.user_prefs.delete_one({"_id": d["userId"]})
     await db.descriptions.update_many({"requestedBy": d["userId"]}, {"$set": {"requestedBy": None}})
@@ -87,6 +97,8 @@ async def _account_deleted(d, e, db):
 
 async def _profile_updated(d, e, db):
     """profile.updated: el perfil más reciente (por updatedAt, obligatorio en el contrato) gana."""
+    if await _is_deleted(db, d["userId"]):
+        return
     at = _dt(d["updatedAt"])
     allowed = {"$or": [{"profileUpdatedAt": {"$exists": False}}, {"profileUpdatedAt": {"$lt": at}}]}
     await _upsert_if_allowed(
