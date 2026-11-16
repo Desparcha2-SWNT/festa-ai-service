@@ -86,10 +86,14 @@ async def _account_deleted(d, e, db):
 
 
 async def _profile_updated(d, e, db):
-    await db.user_prefs.update_one(
-        {"_id": d["userId"]},
-        {"$set": {"displayName": d["displayName"], "interests": d["interests"], "homeZone": d.get("homeZone")}},
-        upsert=True,
+    """profile.updated: el perfil más reciente (por updatedAt, obligatorio en el contrato) gana."""
+    at = _dt(d["updatedAt"])
+    allowed = {"$or": [{"profileUpdatedAt": {"$exists": False}}, {"profileUpdatedAt": {"$lt": at}}]}
+    await _upsert_if_allowed(
+        db.user_prefs,
+        d["userId"],
+        allowed,
+        {"$set": {"displayName": d["displayName"], "interests": d["interests"], "homeZone": d.get("homeZone"), "profileUpdatedAt": at}},
     )
 
 
