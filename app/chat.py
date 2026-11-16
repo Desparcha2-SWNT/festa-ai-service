@@ -11,11 +11,13 @@ from datetime import UTC, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
+from pymongo.errors import DuplicateKeyError
 
 from . import llm, ratelimit
 from .auth import Principal, current_user
 from .config import get_settings
 from .db import get_db
+from .ids import UUID_PATTERN, canonical
 from .messaging.outbox import enqueue
 
 router = APIRouter(prefix="/ai")
@@ -37,7 +39,7 @@ class Location(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=500)
-    sessionId: str | None = Field(default=None, pattern=r"^[0-9a-fA-F-]{36}$")
+    sessionId: str | None = Field(default=None, pattern=UUID_PATTERN)
     location: Location | None = None
 
 
@@ -158,7 +160,7 @@ async def chat(body: ChatRequest, request: Request, response: Response, user: Pr
         raise HTTPException(status_code=429, detail="vas muy rápido, espera un momento", headers={"Retry-After": str(retry_after)})
 
     db = get_db()
-    session_id = (body.sessionId or str(uuid.uuid4())).lower()
+    session_id = canonical(body.sessionId or str(uuid.uuid4()))
     session = await db.chat_sessions.find_one({"_id": session_id})
     if session and session["userId"] != user.user_id:
         raise HTTPException(status_code=404, detail="conversación no encontrada")
@@ -180,6 +182,13 @@ async def chat(body: ChatRequest, request: Request, response: Response, user: Pr
     try:
         result = await llm.complete(system_prompt(now), messages, settings.llm_chat_model, json_output=True, max_tokens=500)
         parsed = llm.parse_json(result.text)
+        # JSON válido no garantiza la forma: se valida aquí para responder el error documentado (503), no un 500.
+        if not isinstance(parsed, dict):
+            raise llm.LLMError("la respuesta del modelo no es un objeto JSON")
+        if parsed.get("reply") is not None and not isinstance(parsed.get("reply"), str):
+            raise llm.LLMError("la respuesta del modelo trae un reply inválido")
+        if parsed.get("eventIds") is not None and not isinstance(parsed.get("eventIds"), list):
+            raise llm.LLMError("la respuesta del modelo trae eventIds inválidos")
     except llm.LLMError as err:
         raise HTTPException(status_code=503, detail="la IA no está disponible ahora, intenta de nuevo") from err
 
@@ -187,18 +196,23 @@ async def chat(body: ChatRequest, request: Request, response: Response, user: Pr
     by_id = {e["_id"]: e for e in candidates}
     chosen = [i for i in dict.fromkeys(str(x).lower() for x in parsed.get("eventIds") or []) if i in by_id][:5]
 
-    await db.chat_sessions.update_one(
-        {"_id": session_id},
-        {
-            "$setOnInsert": {"userId": user.user_id, "createdAt": now},
+    try:
+        # El dueño va en el filtro: si otra cuenta creó este sessionId entre la lectura y la escritura, el
+        # upsert choca con E11000 y no se escribe en su conversación.
+        await db.chat_sessions.update_one(
+            {"_id": session_id, "userId": user.user_id},
+            {
+            "$setOnInsert": {"createdAt": now},
             "$set": {"updatedAt": now},
             "$push": {"messages": {"$each": [
                 {"role": "user", "content": body.message, "at": now},
                 {"role": "assistant", "content": json.dumps({"reply": reply, "eventIds": chosen}, ensure_ascii=False), "at": now},
             ], "$slice": -40}},
-        },
-        upsert=True,
-    )
+            },
+            upsert=True,
+        )
+    except DuplicateKeyError as err:
+        raise HTTPException(status_code=404, detail="conversación no encontrada") from err
 
     await enqueue(
         db,
