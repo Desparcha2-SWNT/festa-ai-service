@@ -2,7 +2,7 @@
 
 Sin transacciones entre colecciones, el outbox es idempotente por id: lo que se publica por causa
 de un mensaje consumido usa un eventId determinista derivado de (causationId, routingKey, clave),
-el mismo algoritmo que notification-service y analytics-service.
+el mismo algoritmo que notification-service (UUID v8 sobre SHA-256).
 """
 import hashlib
 import uuid
@@ -10,8 +10,9 @@ from datetime import UTC, datetime
 
 
 def deterministic_uuid(text: str) -> str:
-    raw = bytearray(hashlib.sha1(text.encode("utf-8")).digest()[:16])
-    raw[6] = (raw[6] & 0x0F) | 0x50
+    """UUID v8 a partir de SHA-256 (mismo algoritmo que notification-service): estable y sin SHA-1."""
+    raw = bytearray(hashlib.sha256(text.encode("utf-8")).digest()[:16])
+    raw[6] = (raw[6] & 0x0F) | 0x80
     raw[8] = (raw[8] & 0x3F) | 0x80
     return str(uuid.UUID(bytes=bytes(raw)))
 

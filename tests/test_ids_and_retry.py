@@ -55,3 +55,14 @@ def test_entrega_inicial_usa_su_exchange():
 def test_mensaje_sin_exchange_ni_x_death_queda_vacio():
     msg = SimpleNamespace(exchange="", headers=None)
     assert _origin_exchange(msg) == ""
+
+
+def test_id_determinista_es_uuid_v8_estable():
+    import uuid as _uuid
+
+    from app.messaging.outbox import deterministic_uuid
+
+    first = deterministic_uuid("description.generated:abc")
+    assert first == deterministic_uuid("description.generated:abc")
+    assert first != deterministic_uuid("description.generated:abd")
+    assert _uuid.UUID(first).version == 8
