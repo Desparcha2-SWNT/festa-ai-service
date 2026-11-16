@@ -1,16 +1,36 @@
 """Handlers del inbox de ai-service (contracts/README.md § Qué consume cada servicio).
 
-Firma: (data, envelope, db). Todos son idempotentes.
+Firma: (data, envelope, db). Sin transacciones (Mongo sin réplica), así que cada escritura se
+condiciona por versión o por marca de tiempo: una entrega atrasada no pisa una más reciente, y un
+estado terminal (cancelado, expirado) no vuelve a «publicado» aunque llegue una foto vieja.
 """
 from datetime import datetime
+
+from pymongo.errors import DuplicateKeyError
+
+TERMINAL_STATUSES = ["cancelled", "expired"]
 
 
 def _dt(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+async def _upsert_if_allowed(col, _id, allowed: dict, update: dict) -> None:
+    """Aplica `update` si el documento no existe o cumple `allowed`.
+
+    Si dos entregas crean el documento a la vez, una recibe E11000: se reintenta una vez para que
+    la más reciente vuelva a evaluar `allowed` contra el documento ya creado y no se pierda.
+    """
+    for _ in range(2):
+        try:
+            await col.update_one({"_id": _id, **allowed}, update, upsert=True)
+            return
+        except DuplicateKeyError:
+            continue
+
+
 async def _catalog_snapshot(d, e, db):
-    """event.published / event.updated: catálogo para recomendar; ignora versiones viejas."""
+    """event.published / event.updated: catálogo para recomendar; ignora versiones viejas y estados terminales."""
     doc = {
         "title": d["title"],
         "description": d["description"][:600],
@@ -28,16 +48,33 @@ async def _catalog_snapshot(d, e, db):
         "status": d["status"],
         "version": d["version"],
     }
-    res = await db.catalog.update_one(
-        {"_id": d["eventId"], "$or": [{"version": {"$exists": False}}, {"version": {"$lt": d["version"]}}]},
-        {"$set": doc},
-    )
-    if res.matched_count == 0:
-        await db.catalog.update_one({"_id": d["eventId"]}, {"$setOnInsert": {**doc, "soldOut": False}}, upsert=True)
+    allowed = {
+        "$and": [
+            {"$or": [{"version": {"$exists": False}}, {"version": {"$lt": d["version"]}}]},
+            # Un cancelado o expirado (aunque llegó antes que la foto) no se reemplaza por una publicación vieja.
+            {"status": {"$nin": TERMINAL_STATUSES}},
+        ]
+    }
+    # soldOut solo se fija al crear; si ya llegó event.sold_out antes, se conserva.
+    await _upsert_if_allowed(db.catalog, d["eventId"], allowed, {"$set": doc, "$setOnInsert": {"soldOut": False}})
 
 
 async def _set_status(db, event_id: str, status: str):
-    await db.catalog.update_one({"_id": event_id}, {"$set": {"status": status}})
+    # upsert: si el estado llega antes que la foto, queda como marca; la foto no la sobrescribe.
+    await db.catalog.update_one({"_id": event_id}, {"$set": {"status": status}}, upsert=True)
+
+
+async def _sold_out(db, event_id: str):
+    await db.catalog.update_one({"_id": event_id}, {"$set": {"soldOut": True}}, upsert=True)
+
+
+async def _consent(db, user_id: str | None, at_iso: str, granted: bool):
+    """RNF5: el último cambio de consentimiento gana, por fecha del evento y no por orden de llegada."""
+    if not user_id:
+        return
+    at = _dt(at_iso)
+    allowed = {"$or": [{"locationConsentAt": {"$exists": False}}, {"locationConsentAt": {"$lt": at}}]}
+    await _upsert_if_allowed(db.user_prefs, user_id, allowed, {"$set": {"locationConsent": granted, "locationConsentAt": at}})
 
 
 async def _account_deleted(d, e, db):
@@ -67,12 +104,12 @@ async def _merchant_updated(d, e, db):
 HANDLERS = {
     "account.deleted": _account_deleted,
     "profile.updated": _profile_updated,
-    "location_consent.granted": lambda d, e, db: db.user_prefs.update_one({"_id": d["userId"]}, {"$set": {"locationConsent": True}}, upsert=True),
-    "location_consent.revoked": lambda d, e, db: db.user_prefs.update_one({"_id": d["userId"]}, {"$set": {"locationConsent": False}}, upsert=True),
+    "location_consent.granted": lambda d, e, db: _consent(db, d["userId"], d["grantedAt"], True),
+    "location_consent.revoked": lambda d, e, db: _consent(db, d["userId"], d["revokedAt"], False),
     "merchant.updated": _merchant_updated,
     "event.published": _catalog_snapshot,
     "event.updated": _catalog_snapshot,
     "event.cancelled": lambda d, e, db: _set_status(db, d["eventId"], "cancelled"),
     "event.expired": lambda d, e, db: _set_status(db, d["eventId"], "expired"),
-    "event.sold_out": lambda d, e, db: db.catalog.update_one({"_id": d["eventId"]}, {"$set": {"soldOut": True}}),
+    "event.sold_out": lambda d, e, db: _sold_out(db, d["eventId"]),
 }

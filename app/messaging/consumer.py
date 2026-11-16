@@ -1,6 +1,7 @@
 """Consume ai-service.inbox siguiendo contracts/README.md § Consumir."""
 import json
 import logging
+from contextlib import suppress
 from datetime import UTC, datetime
 
 import aio_pika
@@ -14,6 +15,21 @@ log = logging.getLogger("ai-service.inbox")
 QUEUE = "ai-service.inbox"
 RETRY_QUEUE = "ai-service.inbox.retry"
 MAX_RETRIES = 3
+
+
+def _origin_exchange(message) -> str:
+    """Exchange por el que llegó el mensaje la primera vez.
+
+    Un reintento sale de la cola de reintento por el default exchange (message.exchange == ""): en ese
+    caso el origen queda en `x-death` (dead-letter de RabbitMQ), y así se valida igual que una entrega
+    inicial sin relajar la comprobación.
+    """
+    if message.exchange:
+        return message.exchange
+    death = (message.headers or {}).get("x-death") or []
+    if death and isinstance(death[0], dict):
+        return str(death[0].get("exchange", ""))
+    return ""
 
 
 async def _dlq(message, reason: str, *args) -> str:
@@ -37,8 +53,9 @@ async def handle(message, registry: SchemaRegistry, channel, db=None) -> str:
     if expected_producer and envelope["producer"] != expected_producer:
         return await _dlq(message, "productor %s no es dueño de %s, va a la DLQ", envelope["producer"], event_type)
     expected_exchange = registry.exchanges.get(event_type)
-    if expected_exchange and message.exchange != expected_exchange:
-        return await _dlq(message, "%s llegó por %s y no por %s, va a la DLQ", event_type, message.exchange, expected_exchange)
+    origin = _origin_exchange(message)
+    if expected_exchange and origin != expected_exchange:
+        return await _dlq(message, "%s llegó por %s y no por %s, va a la DLQ", event_type, origin, expected_exchange)
     if registry.data_errors(event_type, envelope["data"]):
         return await _dlq(message, "data de %s no cumple su esquema, va a la DLQ", event_type)
 
@@ -99,6 +116,9 @@ async def start_consumer(channel, registry: SchemaRegistry):
         try:
             await handle(message, registry, channel)
         except Exception:  # noqa: BLE001
-            log.exception("error inesperado en el inbox")
+            # Sin confirmar, el mensaje ocupa el prefetch para siempre: se devuelve a la cola para reintentar.
+            log.exception("error inesperado en el inbox, se devuelve a la cola")
+            with suppress(Exception):
+                await message.nack(requeue=True)
 
     return await queue.consume(on_message)
