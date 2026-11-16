@@ -17,18 +17,22 @@ RETRY_QUEUE = "ai-service.inbox.retry"
 MAX_RETRIES = 3
 
 
+ORIGIN_HEADER = "x-origin-exchange"
+
+
 def _origin_exchange(message) -> str:
     """Exchange por el que llegó el mensaje la primera vez.
 
-    Un reintento sale de la cola de reintento por el default exchange (message.exchange == ""): en ese
-    caso el origen queda en `x-death` (dead-letter de RabbitMQ), y así se valida igual que una entrega
-    inicial sin relajar la comprobación.
+    Una entrega inicial trae su exchange. Un reintento vuelve por el default exchange (exchange vacío)
+    y la cola de reintento no conserva el original en `x-death`, así que el origen viaja en una cabecera
+    que se pone al republicar (ORIGIN_HEADER). Así se valida igual que una entrega inicial.
     """
     if message.exchange:
         return message.exchange
-    death = (message.headers or {}).get("x-death") or []
-    if death and isinstance(death[0], dict):
-        return str(death[0].get("exchange", ""))
+    headers = message.headers or {}
+    origin = headers.get(ORIGIN_HEADER)
+    if origin:
+        return str(origin)
     return ""
 
 
@@ -100,7 +104,12 @@ async def handle_failure(message, channel, event_type: str, err: Exception) -> s
             delivery_mode=aio_pika.DeliveryMode.PERSISTENT,
             message_id=message.message_id,
             type=message.type,
-            headers={**(message.headers or {}), "x-retry-count": retry_count + 1},
+            # El exchange de origen se guarda aquí: al volver por la cola de reintento, RabbitMQ lo cambia por "".
+            headers={
+                **(message.headers or {}),
+                "x-retry-count": retry_count + 1,
+                ORIGIN_HEADER: _origin_exchange(message),
+            },
         ),
         routing_key=RETRY_QUEUE,
     )

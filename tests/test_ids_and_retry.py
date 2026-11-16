@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from app import ids
 from app.chat import ChatRequest
 from app.descriptions import DescriptionRequest
-from app.messaging.consumer import _origin_exchange
+from app.messaging.consumer import ORIGIN_HEADER, _origin_exchange
 
 
 def test_uuid_pattern_acepta_uuid_y_rechaza_36_guiones():
@@ -36,9 +36,15 @@ def test_canonical_normaliza_a_minusculas():
     assert ids.canonical(u.upper()) == u
 
 
-def test_reintento_toma_el_exchange_de_origen_desde_x_death():
-    msg = SimpleNamespace(exchange="", headers={"x-death": [{"exchange": "festa.ai", "reason": "expired"}]})
+def test_reintento_toma_el_exchange_de_origen_de_la_cabecera():
+    # Al volver por la cola de reintento el exchange es "": el origen viaja en ORIGIN_HEADER.
+    msg = SimpleNamespace(exchange="", headers={ORIGIN_HEADER: "festa.ai", "x-retry-count": 1})
     assert _origin_exchange(msg) == "festa.ai"
+
+
+def test_reintento_sin_cabecera_de_origen_no_se_acepta():
+    msg = SimpleNamespace(exchange="", headers={"x-death": [{"exchange": "festa.ai"}]})
+    assert _origin_exchange(msg) == ""
 
 
 def test_entrega_inicial_usa_su_exchange():
