@@ -108,12 +108,14 @@ async def generate_description(body: DescriptionRequest, request: Request, user:
         if merchant is None:
             raise HTTPException(status_code=403, detail="el comercio no es tuyo o no está verificado")
 
+    # Token propio de este intento: solo quien lo tiene puede finalizar o liberar la reclamación.
+    token = str(uuid.uuid4())
     if existing:
         # Reclamación vencida (la petición anterior murió): se retoma solo si nadie más la tomó.
         request_id = existing["_id"]
         taken = await db.descriptions.update_one(
             {"_id": request_id, "status": "generating", "claimedAt": existing["claimedAt"]},
-            {"$set": {"claimedAt": now}},
+            {"$set": {"claimedAt": now, "claimToken": token}},
         )
         if taken.matched_count == 0:
             raise _busy()
@@ -122,30 +124,35 @@ async def generate_description(body: DescriptionRequest, request: Request, user:
         try:
             await db.descriptions.insert_one({
                 "_id": request_id, "requestedBy": user.user_id, "draftId": draft, "status": "generating",
-                "claimedAt": now, "merchantId": canonical(body.merchantId) if body.merchantId else None, "createdAt": now,
+                "claimedAt": now, "claimToken": token,
+                "merchantId": canonical(body.merchantId) if body.merchantId else None, "createdAt": now,
             })
         except DuplicateKeyError as err:
             raise _busy() from err  # otra petición reclamó el borrador en el mismo instante
 
+    mine = {"_id": request_id, "claimToken": token, "status": "generating"}
     settings = get_settings()
     try:
         result = await llm.complete(SYSTEM, [{"role": "user", "content": build_prompt(body, merchant)}], settings.llm_description_model, max_tokens=400)
     except llm.LLMError as err:
-        await db.descriptions.delete_one({"_id": request_id, "status": "generating"})  # libera para reintentar
+        await db.descriptions.delete_one(mine)  # libera solo nuestra reclamación, para reintentar
         raise HTTPException(status_code=503, detail="la IA no está disponible ahora, intenta de nuevo") from err
     text = clean(result.text)
     if not text:
-        await db.descriptions.delete_one({"_id": request_id, "status": "generating"})
+        await db.descriptions.delete_one(mine)
         raise HTTPException(status_code=503, detail="la IA no devolvió una descripción")
 
-    await db.descriptions.update_one(
-        {"_id": request_id},
+    finished = await db.descriptions.update_one(
+        mine,
         {
             "$set": {"status": "done", "text": text, "provider": result.provider, "model": result.model,
                      "inputTokens": result.input_tokens, "outputTokens": result.output_tokens},
-            "$unset": {"claimedAt": ""},
+            "$unset": {"claimedAt": "", "claimToken": ""},
         },
     )
+    if finished.matched_count == 0:
+        # Nuestra reclamación venció y otra petición ya la retomó: no se sobrescribe su resultado.
+        raise _busy()
     await enqueue(
         db,
         exchange="festa.ai",
