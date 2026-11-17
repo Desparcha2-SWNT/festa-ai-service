@@ -132,7 +132,8 @@ async def _anthropic(key, system, messages, model, max_tokens) -> LLMResult:
     try:
         response = await client.messages.create(
             model=model,
-            max_tokens=max(max_tokens, 2048),
+            # El tope lo pone quien llama (chat 500, descripciones 400): es lo que se factura.
+            max_tokens=max_tokens,
             system=system,
             messages=messages,
             output_config={"effort": "low"},

@@ -15,7 +15,8 @@ from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
 
 from . import llm, ratelimit
-from .auth import Principal, current_user
+from .accounts import active_user, cancel_unsent, is_deleted
+from .auth import Principal
 from .config import get_settings
 from .db import get_db
 from .ids import UUID_PATTERN, canonical
@@ -86,7 +87,7 @@ def _busy() -> HTTPException:
 
 
 @router.post("/descriptions", response_model=DescriptionResponse)
-async def generate_description(body: DescriptionRequest, request: Request, user: Principal = Depends(current_user)):
+async def generate_description(body: DescriptionRequest, request: Request, user: Principal = Depends(active_user)):
     db = get_db()
     draft = canonical(body.draftId)
     key = {"requestedBy": user.user_id, "draftId": draft}
@@ -109,7 +110,8 @@ async def generate_description(body: DescriptionRequest, request: Request, user:
 
     merchant = None
     if body.merchantId:
-        merchant = await db.merchants.find_one({"_id": canonical(body.merchantId), "userId": user.user_id})
+        # Solo un comercio propio y verificado hoy: merchant.updated puede revocar la verificación.
+        merchant = await db.merchants.find_one({"_id": canonical(body.merchantId), "userId": user.user_id, "verified": True})
         if merchant is None:
             raise HTTPException(status_code=403, detail="el comercio no es tuyo o no está verificado")
 
@@ -180,4 +182,12 @@ async def generate_description(body: DescriptionRequest, request: Request, user:
         # Nuestra reclamación venció y otra petición ya la retomó: no se sobrescribe su resultado.
         raise _busy()
     await relay(db, "descriptions", request_id, [event])
+    if await is_deleted(db, user.user_id):
+        # La cuenta se borró mientras se generaba: account.deleted pudo correr antes de esta escritura,
+        # así que se deshace aquí (mismo efecto que su borrado) y no se publica el id de la persona.
+        await db.descriptions.update_one(
+            {"_id": request_id}, {"$set": {"requestedBy": None}, "$unset": {"pendingEvents": ""}}
+        )
+        await cancel_unsent(db, user.user_id, [event["eventId"]])
+        raise HTTPException(status_code=403, detail="la cuenta fue eliminada")
     return DescriptionResponse(draftId=draft, description=text, cached=False, provider=result.provider, model=result.model)

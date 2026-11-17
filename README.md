@@ -38,7 +38,9 @@ pruebas y demos.
 
 - **Consume** (`ai-service.inbox`): `event.published|updated|cancelled|expired|sold_out` (catálogo), `profile.updated`
   (intereses), `location_consent.*`, `merchant.updated` (contexto del comercio) y `account.deleted` (borra historial y
-  preferencias; Ley 1581). El historial de chat además expira a los 30 días.
+  preferencias, desvincula el comercio y cancela los mensajes aún no publicados con su id; Ley 1581). Una lápida
+  (`deleted_accounts`) hace que el token aún vigente reciba 403 y que entregas o peticiones en curso no recreen datos
+  (`app/accounts.py`). El historial de chat además expira a los 30 días.
 - **Publica** (`festa.ai`): `description.generated`, `recommendation.served` (costo de IA y visibilidad para analytics).
 
 ## Correr en local

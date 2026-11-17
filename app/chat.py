@@ -14,7 +14,8 @@ from pydantic import BaseModel, Field
 from pymongo.errors import DuplicateKeyError
 
 from . import llm, ratelimit
-from .auth import Principal, current_user
+from .accounts import active_user, cancel_unsent, is_deleted
+from .auth import Principal
 from .config import get_settings
 from .db import get_db
 from .ids import UUID_PATTERN, canonical
@@ -153,13 +154,16 @@ def context_message(prefs: dict | None, candidates: list[dict]) -> str:
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(body: ChatRequest, request: Request, response: Response, user: Principal = Depends(current_user)):
+async def chat(body: ChatRequest, request: Request, response: Response, user: Principal = Depends(active_user)):
     settings = get_settings()
     allowed, retry_after = await ratelimit.hit(user.user_id)
     if not allowed:
         raise HTTPException(status_code=429, detail="vas muy rápido, espera un momento", headers={"Retry-After": str(retry_after)})
 
     db = get_db()
+    # Generación del historial al empezar: si DELETE /chat/history corre mientras el LLM responde,
+    # este turno no debe reaparecer después del borrado (ver _history_generation).
+    generation = await _history_generation(db, user.user_id)
     session_id = canonical(body.sessionId or str(uuid.uuid4()))
     session = await db.chat_sessions.find_one({"_id": session_id})
     if session and session["userId"] != user.user_id:
@@ -196,6 +200,7 @@ async def chat(body: ChatRequest, request: Request, response: Response, user: Pr
     by_id = {e["_id"]: e for e in candidates}
     chosen = [i for i in dict.fromkeys(str(x).lower() for x in parsed.get("eventIds") or []) if i in by_id][:5]
 
+    turn = str(uuid.uuid4())
     event = pending_event(
         exchange="festa.ai",
         routing_key="recommendation.served",
@@ -221,8 +226,8 @@ async def chat(body: ChatRequest, request: Request, response: Response, user: Pr
             "$setOnInsert": {"createdAt": now},
             "$set": {"updatedAt": now},
             "$push": {"messages": {"$each": [
-                {"role": "user", "content": body.message, "at": now},
-                {"role": "assistant", "content": json.dumps({"reply": reply, "eventIds": chosen}, ensure_ascii=False), "at": now},
+                {"role": "user", "content": body.message, "at": now, "turn": turn},
+                {"role": "assistant", "content": json.dumps({"reply": reply, "eventIds": chosen}, ensure_ascii=False), "at": now, "turn": turn},
             ], "$slice": -40}, "pendingEvents": event},
             },
             upsert=True,
@@ -230,6 +235,15 @@ async def chat(body: ChatRequest, request: Request, response: Response, user: Pr
     except DuplicateKeyError as err:
         raise HTTPException(status_code=404, detail="conversación no encontrada") from err
     await relay(db, "chat_sessions", session_id, [event])
+
+    # Se vuelve a mirar DESPUÉS de escribir: account.deleted y DELETE /chat/history marcan antes de borrar,
+    # así que si su borrado ocurrió antes de esta escritura, aquí se ve y el turno se deshace.
+    if await is_deleted(db, user.user_id):
+        await db.chat_sessions.delete_one({"_id": session_id, "userId": user.user_id})
+        await cancel_unsent(db, user.user_id, [event["eventId"]])
+        raise HTTPException(status_code=403, detail="la cuenta fue eliminada")
+    if await _history_generation(db, user.user_id) != generation:
+        await _drop_turn(db, session_id, user.user_id, turn)
 
     return ChatResponse(
         sessionId=session_id,
@@ -246,7 +260,7 @@ async def chat(body: ChatRequest, request: Request, response: Response, user: Pr
 
 
 @router.get("/chat/sessions/{session_id}")
-async def get_session(session_id: str, user: Principal = Depends(current_user)):
+async def get_session(session_id: str, user: Principal = Depends(active_user)):
     session = await get_db().chat_sessions.find_one({"_id": session_id.lower(), "userId": user.user_id})
     if not session:
         raise HTTPException(status_code=404, detail="conversación no encontrada")
@@ -262,7 +276,21 @@ async def get_session(session_id: str, user: Principal = Depends(current_user)):
     return {"sessionId": session["_id"], "messages": out}
 
 
+async def _history_generation(db, user_id: str) -> int:
+    doc = await db.history_resets.find_one({"_id": user_id})
+    return (doc or {}).get("generation", 0)
+
+
+async def _drop_turn(db, session_id: str, user_id: str, turn: str) -> None:
+    """Saca solo los mensajes de este turno; si la conversación queda vacía, se borra."""
+    await db.chat_sessions.update_one({"_id": session_id, "userId": user_id}, {"$pull": {"messages": {"turn": turn}}})
+    await db.chat_sessions.delete_one({"_id": session_id, "userId": user_id, "messages": {"$size": 0}})
+
+
 @router.delete("/chat/history", status_code=204)
-async def delete_history(user: Principal = Depends(current_user)):
-    await get_db().chat_sessions.delete_many({"userId": user.user_id})
+async def delete_history(user: Principal = Depends(active_user)):
+    db = get_db()
+    # Primero la marca y después el borrado: un turno en curso que escriba tarde la ve y se deshace.
+    await db.history_resets.update_one({"_id": user.user_id}, {"$inc": {"generation": 1}}, upsert=True)
+    await db.chat_sessions.delete_many({"userId": user.user_id})
     return Response(status_code=204)
