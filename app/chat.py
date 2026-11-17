@@ -158,6 +158,13 @@ async def chat(body: ChatRequest, request: Request, response: Response, user: Pr
     allowed, retry_after = await ratelimit.hit(user.user_id)
     if not allowed:
         raise HTTPException(status_code=429, detail="vas muy rápido, espera un momento", headers={"Retry-After": str(retry_after)})
+    within_day, seconds_to_reset = await ratelimit.hit_daily(user.user_id, settings.chat_daily_limit)
+    if not within_day:
+        raise HTTPException(
+            status_code=429,
+            detail="llegaste al límite de preguntas de hoy; vuelve mañana",
+            headers={"Retry-After": str(seconds_to_reset)},
+        )
 
     db = get_db()
     session_id = canonical(body.sessionId or str(uuid.uuid4()))

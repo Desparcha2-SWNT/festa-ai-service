@@ -44,3 +44,21 @@ async def hit(user_id: str, limit: int | None = None, scope: str = "chat") -> tu
         _local[key] = _local.get(key, 0) + 1
         count = _local[key]
     return count <= limit, retry_after
+
+
+async def hit_daily(user_id: str, limit: int, scope: str = "chat") -> tuple[bool, int]:
+    """Tope diario por usuario. Devuelve (permitida, segundos hasta el próximo día UTC)."""
+    now = time.time()
+    day = int(now // 86400)
+    seconds_to_reset = int(86400 - now % 86400)
+    key = f"ai:{scope}-day:{user_id}:{day}"
+    if _redis is not None:
+        count = await _redis.incr(key)
+        if count == 1:
+            await _redis.expire(key, 2 * 86400)
+    else:
+        for k in [k for k in _local if k.startswith(f"ai:{scope}-day:") and not k.endswith(f":{day}")]:
+            _local.pop(k, None)
+        _local[key] = _local.get(key, 0) + 1
+        count = _local[key]
+    return count <= limit, seconds_to_reset
