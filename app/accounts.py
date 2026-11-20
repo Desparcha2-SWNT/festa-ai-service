@@ -29,6 +29,26 @@ async def cancel_unsent(db, user_id: str, event_ids: list[str] | None = None) ->
     return result.deleted_count
 
 
+# Identificador anónimo con formato uuid: el contrato exige userId/requestedBy y la copia guardada lo conserva.
+ANONYMOUS_ID = "00000000-0000-0000-0000-000000000000"
+
+
+async def anonymize_sent(db, user_id: str) -> int:
+    """Quita el id de la persona de las copias ya publicadas que guarda el outbox.
+
+    Lo publicado lo borra cada consumidor con su propio `account.deleted`, pero la copia de este servicio
+    seguiría con el id. Se reemplaza por el id anónimo (el payload sigue cumpliendo el contrato) y, además,
+    las filas enviadas expiran a los 30 días (índice TTL sobre `sentAt`, ver db.py).
+    """
+    total = 0
+    for field in ("userId", "requestedBy"):
+        result = await db.outbox.update_many(
+            {"sentAt": {"$ne": None}, f"payload.{field}": user_id}, {"$set": {f"payload.{field}": ANONYMOUS_ID}}
+        )
+        total += result.modified_count
+    return total
+
+
 async def active_user(user: Principal = Depends(current_user)) -> Principal:
     """El JWT sigue vigente un rato después de borrar la cuenta: se rechaza con la lápida."""
     if await is_deleted(get_db(), user.user_id):

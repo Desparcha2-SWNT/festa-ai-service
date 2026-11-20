@@ -22,6 +22,9 @@ async def connect():
 
 async def ensure_indexes(db) -> None:
     await db.outbox.create_index([("sentAt", ASCENDING), ("createdAt", ASCENDING)])
+    # Retención: una fila ya publicada no se necesita más que para reintentos y auditoría corta. El TTL solo
+    # expira fechas, así que las pendientes (sentAt nulo) no se tocan.
+    await db.outbox.create_index("sentAt", name="outbox_sent_ttl", expireAfterSeconds=30 * 24 * 3600)
     await db.processed_events.create_index("processedAt", expireAfterSeconds=30 * 24 * 3600)
     await db.catalog.create_index([("status", ASCENDING), ("startsAt", ASCENDING)])
     await db.catalog.create_index([("location", "2dsphere")])

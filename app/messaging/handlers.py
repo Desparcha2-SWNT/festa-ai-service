@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 
 from pymongo.errors import DuplicateKeyError
 
-from ..accounts import cancel_unsent, is_deleted
+from ..accounts import anonymize_sent, cancel_unsent, is_deleted
 
 TERMINAL_STATUSES = ["cancelled", "expired"]
 
@@ -119,6 +119,8 @@ async def _account_deleted(d, e, db):
     await db.merchants.update_many({"userId": user_id}, _UNLINKED)
     # Lo que ya pasó al outbox y no se ha publicado también se cancela (ver accounts.cancel_unsent).
     await cancel_unsent(db, user_id)
+    # Y lo ya publicado conserva la copia en el outbox: se anonimiza (ver accounts.anonymize_sent).
+    await anonymize_sent(db, user_id)
 
 
 async def _profile_updated(d, e, db):
