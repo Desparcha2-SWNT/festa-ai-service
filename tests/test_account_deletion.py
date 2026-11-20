@@ -262,3 +262,60 @@ async def test_las_filas_enviadas_del_outbox_expiran(mongo_db):
     indexes = await mongo_db.outbox.index_information()
     ttl = indexes["outbox_sent_ttl"]
     assert ttl["key"] == [("sentAt", 1)] and ttl["expireAfterSeconds"] == 30 * 24 * 3600
+
+
+class _FakeExchange:
+    def __init__(self):
+        self.published = []
+
+    async def publish(self, message, routing_key):
+        self.published.append((routing_key, message.body))
+
+
+class _ChannelThatPausesAfterClaim:
+    """Ejecuta `side_effect` cuando el publicador ya reclamó la fila y antes de que publique."""
+
+    def __init__(self, side_effect):
+        self.exchange = _FakeExchange()
+        self._side_effect = side_effect
+
+    async def get_exchange(self, name, ensure=False):
+        await self._side_effect()
+        return self.exchange
+
+
+async def _outbox_row_for(db, user_id):
+    from app.messaging.outbox import enqueue
+
+    return await enqueue(
+        db, exchange="festa.ai", routing_key="recommendation.served", payload={"userId": user_id, "eventIds": []}
+    )
+
+
+async def test_publicador_no_envia_lo_reclamado_si_la_cuenta_se_borra_antes_de_publicar(mongo_db):
+    from app.messaging.publisher import publish_pending
+
+    await _outbox_row_for(mongo_db, USER)
+
+    async def delete_account():
+        await HANDLERS["account.deleted"](DELETED, {}, mongo_db)
+
+    channel = _ChannelThatPausesAfterClaim(delete_account)
+    sent = await publish_pending(channel, mongo_db)
+
+    assert sent == 0
+    assert channel.exchange.published == []
+    assert await mongo_db.outbox.count_documents({"payload.userId": USER}) == 0
+
+
+async def test_publicador_publica_normalmente_si_la_cuenta_sigue_vigente(mongo_db):
+    from app.messaging.publisher import publish_pending
+
+    await _outbox_row_for(mongo_db, USER)
+
+    async def nothing():
+        return None
+
+    channel = _ChannelThatPausesAfterClaim(nothing)
+    assert await publish_pending(channel, mongo_db) == 1
+    assert len(channel.exchange.published) == 1
