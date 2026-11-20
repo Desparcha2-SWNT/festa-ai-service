@@ -12,6 +12,7 @@ eventId es estable, tampoco se duplica.
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from ..accounts import cancel_unsent, is_deleted
 from .outbox import enqueue
 
 COLLECTIONS = ("descriptions", "chat_sessions")
@@ -31,16 +32,27 @@ def pending_event(*, exchange: str, routing_key: str, payload: dict, correlation
 
 
 async def relay(db, collection: str, doc_id: str, events: list[dict]) -> None:
-    """Copia los pendientes al outbox y los saca del documento (las dos cosas son idempotentes)."""
+    """Copia los pendientes al outbox y los saca del documento (las dos cosas son idempotentes).
+
+    Un pendiente lleva el id de la persona (userId / requestedBy). Si su cuenta ya se borró, no se copia: el
+    barrido pudo leer el documento antes de que account.deleted lo limpiara y, sin esto, recrearía en el
+    outbox un mensaje con su id. La lápida se mira antes y también después de encolar: account.deleted la
+    escribe ANTES de cancelar el outbox, así que en cualquier intercalado o el borrado ve el mensaje y lo
+    cancela, o este lo ve y lo cancela él mismo.
+    """
     for ev in events:
-        await enqueue(
-            db,
-            exchange=ev["exchange"],
-            routing_key=ev["routingKey"],
-            payload=ev["payload"],
-            correlation_id=ev.get("correlationId"),
-            event_id=ev["eventId"],
-        )
+        user_id = ev["payload"].get("userId") or ev["payload"].get("requestedBy")
+        if not await is_deleted(db, user_id):
+            await enqueue(
+                db,
+                exchange=ev["exchange"],
+                routing_key=ev["routingKey"],
+                payload=ev["payload"],
+                correlation_id=ev.get("correlationId"),
+                event_id=ev["eventId"],
+            )
+            if await is_deleted(db, user_id):
+                await cancel_unsent(db, user_id, [ev["eventId"]])
         await db[collection].update_one({"_id": doc_id}, {"$pull": {"pendingEvents": {"eventId": ev["eventId"]}}})
 
 
