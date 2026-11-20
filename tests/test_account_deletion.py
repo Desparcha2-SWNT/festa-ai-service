@@ -201,3 +201,54 @@ async def test_anthropic_respeta_el_tope_de_tokens_de_quien_llama(monkeypatch):
     monkeypatch.setitem(sys.modules, "anthropic", fake)
     await llm._anthropic("k", "sistema", [{"role": "user", "content": "hola"}], "claude-haiku-5-5", 400)
     assert seen["max_tokens"] == 400
+
+
+async def _doc_with_pending(db, user_id):
+    from app.messaging.pending import pending_event
+
+    ev = pending_event(
+        exchange="festa.ai",
+        routing_key="description.generated",
+        payload={"requestedBy": user_id, "eventId": str(uuid.uuid4())},
+    )
+    await db.descriptions.insert_one({"_id": "d1", "pendingEvents": [ev]})
+    return ev
+
+
+async def test_relay_no_publica_pendientes_de_una_cuenta_ya_borrada(mongo_db):
+    from app.messaging.pending import relay
+
+    ev = await _doc_with_pending(mongo_db, USER)
+    await mongo_db.deleted_accounts.insert_one({"_id": USER})
+
+    await relay(mongo_db, "descriptions", "d1", [ev])  # el barrido ya tenía el pendiente en memoria
+
+    assert await mongo_db.outbox.count_documents({}) == 0
+    assert not (await mongo_db.descriptions.find_one({"_id": "d1"})).get("pendingEvents")
+
+
+async def test_relay_cancela_lo_que_encolo_si_la_cuenta_se_borra_en_medio(mongo_db, monkeypatch):
+    from app.messaging import pending
+
+    ev = await _doc_with_pending(mongo_db, USER)
+    original = pending.enqueue
+
+    async def enqueue_then_delete(db, **kwargs):
+        result = await original(db, **kwargs)
+        await db.deleted_accounts.insert_one({"_id": USER})  # account.deleted corre justo después de encolar
+        return result
+
+    monkeypatch.setattr(pending, "enqueue", enqueue_then_delete)
+    await pending.relay(mongo_db, "descriptions", "d1", [ev])
+
+    assert await mongo_db.outbox.count_documents({}) == 0
+
+
+async def test_relay_sigue_publicando_las_cuentas_vigentes(mongo_db):
+    from app.messaging.pending import relay
+
+    ev = await _doc_with_pending(mongo_db, USER)
+
+    await relay(mongo_db, "descriptions", "d1", [ev])
+
+    assert await mongo_db.outbox.count_documents({"_id": ev["eventId"]}) == 1
