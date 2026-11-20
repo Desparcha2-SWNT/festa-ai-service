@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 import aio_pika
 from pymongo import ReturnDocument
 
+from ..accounts import is_deleted
 from ..config import get_settings
 from ..db import get_db
 from .pending import relay_stuck
@@ -30,6 +31,23 @@ def build_envelope(row: dict) -> dict:
     }
 
 
+async def _cancelled_after_claim(db, row: dict) -> bool:
+    """¿Se borró la cuenta (o la fila) después de reclamarla?
+
+    `account.deleted` escribe la lápida y luego borra del outbox lo no enviado, pero no puede quitarle al
+    publicador una fila que ya reclamó y tiene en memoria. Por eso se vuelve a mirar justo antes de publicar:
+    si la fila ya no existe o la persona tiene lápida, no se publica y la fila se descarta.
+    """
+    payload = row.get("payload") or {}
+    user_id = payload.get("userId") or payload.get("requestedBy")
+    if await db.outbox.find_one({"_id": row["_id"]}, {"_id": 1}) is None:
+        return True
+    if await is_deleted(db, user_id):
+        await db.outbox.delete_one({"_id": row["_id"], "sentAt": None})
+        return True
+    return False
+
+
 async def publish_pending(channel, db=None, batch: int = 50) -> int:
     db = db if db is not None else get_db()
     sent = 0
@@ -45,6 +63,8 @@ async def publish_pending(channel, db=None, batch: int = 50) -> int:
             break
         envelope = build_envelope(row)
         exchange = await channel.get_exchange(row["exchange"], ensure=False)
+        if await _cancelled_after_claim(db, row):
+            continue
         await exchange.publish(
             aio_pika.Message(
                 body=json.dumps(envelope, ensure_ascii=False).encode("utf-8"),
