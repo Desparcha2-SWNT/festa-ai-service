@@ -89,6 +89,10 @@ async def test_account_deleted_cancela_mensajes_pendientes_y_sin_publicar(mongo_
     unsent = await mongo_db.outbox.count_documents({"sentAt": None, "$or": [{"payload.userId": USER}, {"payload.requestedBy": USER}]})
     assert unsent == 0
     assert await mongo_db.outbox.count_documents({"sentAt": "ya"}) == 1
+    # La copia ya publicada se conserva, pero sin el id de la persona.
+    sent = await mongo_db.outbox.find_one({"sentAt": "ya"})
+    assert sent["payload"]["userId"] == "00000000-0000-0000-0000-000000000000"
+    assert await mongo_db.outbox.count_documents({"$or": [{"payload.userId": USER}, {"payload.requestedBy": USER}]}) == 0
     assert await mongo_db.descriptions.count_documents({"pendingEvents": {"$exists": True}}) == 0
 
 
@@ -252,3 +256,9 @@ async def test_relay_sigue_publicando_las_cuentas_vigentes(mongo_db):
     await relay(mongo_db, "descriptions", "d1", [ev])
 
     assert await mongo_db.outbox.count_documents({"_id": ev["eventId"]}) == 1
+
+
+async def test_las_filas_enviadas_del_outbox_expiran(mongo_db):
+    indexes = await mongo_db.outbox.index_information()
+    ttl = indexes["outbox_sent_ttl"]
+    assert ttl["key"] == [("sentAt", 1)] and ttl["expireAfterSeconds"] == 30 * 24 * 3600
