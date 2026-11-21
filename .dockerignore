@@ -1,0 +1,7 @@
+.venv/
+.git/
+.github/
+.festa-infra/
+.env
+__pycache__/
+.pytest_cache/
