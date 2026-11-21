@@ -96,3 +96,26 @@ async def test_transient_failure_retries_then_dlq(registry):
 
     exhausted = FakeMessage(envelope(), headers={"x-retry-count": 3})
     assert await consumer.handle(exhausted, registry, FakeChannel(), BrokenDb()) == "dlq"
+
+
+async def test_retry_round_trip_keeps_origin_and_forged_origin_goes_to_dlq(registry, mongo_db):
+    """El reintento que publica este servicio vuelve a validar; el que fabrica otro publicador, no."""
+    class BrokenDb:
+        class processed_events:  # noqa: N801
+            @staticmethod
+            async def find_one(_):
+                raise RuntimeError("mongo caído")
+
+    channel = FakeChannel()
+    msg = FakeMessage(envelope())
+    assert await consumer.handle(msg, registry, channel, BrokenDb()) == "retry"
+    _, retried = channel.default_exchange.published[0]
+    assert consumer.SIGNATURE_HEADER in retried.headers
+
+    # Vuelve por el default exchange (exchange vacío), con las cabeceras que puso este servicio.
+    back = FakeMessage(retried.body, exchange="", headers=dict(retried.headers))
+    assert await consumer.handle(back, registry, FakeChannel(), mongo_db) == "ack"
+
+    # Otro publicador pone el exchange esperado en la cabecera, pero no puede firmarlo.
+    forged = FakeMessage(envelope(), exchange="", headers={consumer.ORIGIN_HEADER: "festa.event"})
+    assert await consumer.handle(forged, registry, FakeChannel(), mongo_db) == "dlq"

@@ -17,6 +17,7 @@ os.environ.setdefault("MONGO_URL", TEST_MONGO_URL or "mongodb://localhost:27017/
 os.environ.setdefault("AMQP_URL", "amqp://test:test@localhost:5672")
 os.environ.setdefault("JWT_ISSUER", "festa-auth")
 os.environ["JWT_PUBLIC_KEY_PATH"] = str(_pub)
+os.environ["INBOX_RETRY_KEY"] = "clave-de-prueba-de-reintentos-0123456789abcdef"
 os.environ["LLM_PROVIDER"] = "fake"
 os.environ["LLM_API_KEY"] = ""
 os.environ["REDIS_URL"] = ""

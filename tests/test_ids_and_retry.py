@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from app import ids
 from app.chat import ChatRequest
 from app.descriptions import DescriptionRequest
-from app.messaging.consumer import ORIGIN_HEADER, _origin_exchange
+from app.messaging.consumer import ORIGIN_HEADER, SIGNATURE_HEADER, _origin_exchange, _sign_origin
 
 
 def test_uuid_pattern_acepta_uuid_y_rechaza_36_guiones():
@@ -36,14 +36,39 @@ def test_canonical_normaliza_a_minusculas():
     assert ids.canonical(u.upper()) == u
 
 
-def test_reintento_toma_el_exchange_de_origen_de_la_cabecera():
-    # Al volver por la cola de reintento el exchange es "": el origen viaja en ORIGIN_HEADER.
-    msg = SimpleNamespace(exchange="", headers={ORIGIN_HEADER: "festa.ai", "x-retry-count": 1})
-    assert _origin_exchange(msg) == "festa.ai"
+def _signed(origin, body=b"{}"):
+    return SimpleNamespace(
+        exchange="",
+        body=body,
+        headers={ORIGIN_HEADER: origin, SIGNATURE_HEADER: _sign_origin(origin, body), "x-retry-count": 1},
+    )
+
+
+def test_reintento_toma_el_exchange_de_origen_de_la_cabecera_firmada():
+    # Al volver por la cola de reintento el exchange es "": el origen viaja en ORIGIN_HEADER, firmado por este servicio.
+    assert _origin_exchange(_signed("festa.ai")) == "festa.ai"
+
+
+def test_reintento_sin_firma_no_se_acepta():
+    # Quien publica directo en la inbox puede poner la cabecera, pero no puede firmarla.
+    msg = SimpleNamespace(exchange="", body=b"{}", headers={ORIGIN_HEADER: "festa.ai", "x-retry-count": 1})
+    assert _origin_exchange(msg) == ""
+
+
+def test_reintento_con_firma_falsa_o_reutilizada_no_se_acepta():
+    forged = SimpleNamespace(exchange="", body=b"{}", headers={ORIGIN_HEADER: "festa.ai", SIGNATURE_HEADER: "00" * 32})
+    assert _origin_exchange(forged) == ""
+    # La firma de otro contenido no se puede reutilizar en este mensaje.
+    other_body = _signed("festa.ai", body=b'{"otro":1}')
+    assert _origin_exchange(SimpleNamespace(exchange="", body=b"{}", headers=other_body.headers)) == ""
+    # Ni se puede cambiar el exchange conservando la firma de otro.
+    other_origin = _signed("festa.user")
+    swapped = SimpleNamespace(exchange="", body=b"{}", headers={**other_origin.headers, ORIGIN_HEADER: "festa.ai"})
+    assert _origin_exchange(swapped) == ""
 
 
 def test_reintento_sin_cabecera_de_origen_no_se_acepta():
-    msg = SimpleNamespace(exchange="", headers={"x-death": [{"exchange": "festa.ai"}]})
+    msg = SimpleNamespace(exchange="", body=b"{}", headers={"x-death": [{"exchange": "festa.ai"}]})
     assert _origin_exchange(msg) == ""
 
 
