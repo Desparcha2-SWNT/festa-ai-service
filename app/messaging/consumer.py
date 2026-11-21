@@ -1,4 +1,6 @@
 """Consume ai-service.inbox siguiendo contracts/README.md § Consumir."""
+import hashlib
+import hmac
 import json
 import logging
 from contextlib import suppress
@@ -6,6 +8,7 @@ from datetime import UTC, datetime
 
 import aio_pika
 
+from ..config import get_settings
 from ..db import get_db
 from .handlers import HANDLERS
 from .registry import SchemaRegistry
@@ -18,21 +21,34 @@ MAX_RETRIES = 3
 
 
 ORIGIN_HEADER = "x-origin-exchange"
+SIGNATURE_HEADER = "x-origin-signature"
+
+
+def _sign_origin(origin: str, body: bytes) -> str:
+    """Firma del origen de un reintento, atada al contenido exacto del mensaje (no se puede pasar a otro)."""
+    digest = hashlib.sha256(body).hexdigest()
+    key = get_settings().inbox_retry_key.encode()
+    return hmac.new(key, f"{origin}{chr(10)}{digest}".encode(), hashlib.sha256).hexdigest()
 
 
 def _origin_exchange(message) -> str:
     """Exchange por el que llegó el mensaje la primera vez.
 
-    Una entrega inicial trae su exchange. Un reintento vuelve por el default exchange (exchange vacío)
-    y la cola de reintento no conserva el original en `x-death`, así que el origen viaja en una cabecera
-    que se pone al republicar (ORIGIN_HEADER). Así se valida igual que una entrega inicial.
+    Una entrega inicial trae su exchange. Un reintento vuelve por el default exchange (exchange vacío) y la cola
+    de reintento no conserva el original en `x-death`, así que el origen viaja en una cabecera que se pone al
+    republicar (ORIGIN_HEADER) y que este servicio firma (SIGNATURE_HEADER). Con las credenciales de RabbitMQ
+    compartidas, cualquiera puede publicar directo en la inbox y poner la cabecera; sin la clave de este
+    servicio no puede firmarla, así que un origen sin firma válida cuenta como vacío y va a la DLQ.
     """
     if message.exchange:
         return message.exchange
     headers = message.headers or {}
     origin = headers.get(ORIGIN_HEADER)
-    if origin:
-        return str(origin)
+    signature = headers.get(SIGNATURE_HEADER)
+    if not isinstance(origin, str) or not isinstance(signature, str):
+        return ""
+    if hmac.compare_digest(_sign_origin(origin, message.body), signature):
+        return origin
     return ""
 
 
@@ -97,6 +113,7 @@ async def handle_failure(message, channel, event_type: str, err: Exception) -> s
         return await _dlq(message, "reintentos agotados para %s: %s", event_type, err)
 
     log.warning("falla transitoria en %s (%s), se reintenta", event_type, err)
+    origin = _origin_exchange(message)
     await channel.default_exchange.publish(
         aio_pika.Message(
             body=message.body,
@@ -108,7 +125,8 @@ async def handle_failure(message, channel, event_type: str, err: Exception) -> s
             headers={
                 **(message.headers or {}),
                 "x-retry-count": retry_count + 1,
-                ORIGIN_HEADER: _origin_exchange(message),
+                ORIGIN_HEADER: origin,
+                SIGNATURE_HEADER: _sign_origin(origin, message.body),
             },
         ),
         routing_key=RETRY_QUEUE,

@@ -3,6 +3,27 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+MIN_RETRY_KEY_LENGTH = 16
+
+
+def _retry_key() -> str:
+    """Clave que firma el origen de los reintentos de la inbox (openssl rand -hex 32).
+
+    Es obligatoria y estable: con una distinta en cada arranque, un reintento pendiente que sobreviva a un
+    reinicio, o que otra réplica reciba, llegaría con una firma que ya no vale y se iría a la DLQ. Tampoco puede
+    ser corta ni un valor de ejemplo (change-me...): una clave conocida dejaría la firma sin ningún efecto.
+    """
+    value = os.environ.get("INBOX_RETRY_KEY")
+    if value is None:
+        raise RuntimeError("Falta la variable de entorno INBOX_RETRY_KEY (openssl rand -hex 32)")
+    key = value.strip()
+    if len(key) < MIN_RETRY_KEY_LENGTH or key.lower().startswith(("change-me", "changeme")):
+        raise RuntimeError(
+            f"INBOX_RETRY_KEY esta vacia, tiene menos de {MIN_RETRY_KEY_LENGTH} caracteres o es un valor de ejemplo: "
+            "define una clave real (openssl rand -hex 32)"
+        )
+    return value
+
 
 def _required(name: str) -> str:
     value = os.environ.get(name)
@@ -19,6 +40,7 @@ class Settings:
     mongo_url: str = field(default_factory=lambda: _required("MONGO_URL"))
     redis_url: str = field(default_factory=lambda: os.environ.get("REDIS_URL", ""))
     amqp_url: str = field(default_factory=lambda: _required("AMQP_URL"))
+    inbox_retry_key: str = field(default_factory=_retry_key, repr=False)
     jwt_issuer: str = field(default_factory=lambda: _required("JWT_ISSUER"))
     jwt_public_key_path: str = field(default_factory=lambda: _required("JWT_PUBLIC_KEY_PATH"))
     contracts_dir: str = os.environ.get(
