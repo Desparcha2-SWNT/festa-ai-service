@@ -51,8 +51,8 @@ class Settings:
     llm_provider: str = os.environ.get("LLM_PROVIDER", "groq").lower()
     llm_api_key: str = os.environ.get("LLM_API_KEY", "")
     # RNF8: modelos de bajo costo (nivel "mini"/"flash").
-    llm_chat_model: str = os.environ.get("LLM_CHAT_MODEL", "llama-3.3-70b-versatile")
-    llm_description_model: str = os.environ.get("LLM_DESCRIPTION_MODEL", "llama-3.3-70b-versatile")
+    llm_chat_model: str = os.environ.get("LLM_CHAT_MODEL", "openai/gpt-oss-120b")
+    llm_description_model: str = os.environ.get("LLM_DESCRIPTION_MODEL", "openai/gpt-oss-120b")
     ollama_url: str = os.environ.get("OLLAMA_URL", "http://ollama:11434")
     llm_timeout_s: float = float(os.environ.get("LLM_TIMEOUT_SECONDS", "30"))
     # RNF8: límite de mensajes de chat por usuario por minuto (5–20).
