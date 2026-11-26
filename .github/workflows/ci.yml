@@ -71,8 +71,8 @@ jobs:
           python - >> "$GITHUB_STEP_SUMMARY" <<'EOF'
           import json
           t = json.load(open("coverage.json"))["totals"]
-          print("## Cobertura de pruebas (app/)
-")
+          print("## Cobertura de pruebas (app/)")
+          print()
           print("| Métrica | Cobertura | Cubiertas |")
           print("|---|---|---|")
           print(f"| Líneas | {100 * t['covered_lines'] / max(t['num_statements'], 1):.2f} % | {t['covered_lines']} de {t['num_statements']} |")
