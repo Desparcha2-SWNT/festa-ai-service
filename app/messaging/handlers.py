@@ -135,26 +135,39 @@ async def _profile_updated(d, e, db):
     )
 
 
-async def _merchant_updated(d, e, db):
-    """merchant.updated: el más reciente (por updatedAt, obligatorio en el contrato) gana.
-
-    `verified` se guarda tal cual (puede volver a false si se revoca) y descriptions.py lo exige.
-    Si el dueño borró su cuenta, el comercio queda sin vínculo personal aunque esta entrega llegue tarde.
-    """
+async def _store_merchant(d, db, at, verified: bool):
+    """Guarda la copia del comercio si este cambio es el más reciente (por `at`) y respeta el borrado de cuenta."""
     if await is_deleted(db, d["userId"]):
         await db.merchants.update_one({"_id": d["merchantId"]}, _UNLINKED)
         return
-    at = _dt(d["updatedAt"])
     allowed = {"$or": [{"updatedAt": {"$exists": False}}, {"updatedAt": {"$lt": at}}]}
     await _upsert_if_allowed(
         db.merchants,
         d["merchantId"],
         allowed,
         {"$set": {"userId": d["userId"], "businessName": d["businessName"], "category": d["category"], "place": d["place"],
-                  "verified": d["verified"] is True, "updatedAt": at}},
+                  "verified": verified, "updatedAt": at}},
     )
     if await is_deleted(db, d["userId"]):  # account.deleted llegó entre la consulta y la escritura
         await db.merchants.update_one({"_id": d["merchantId"]}, _UNLINKED)
+
+
+async def _merchant_updated(d, e, db):
+    """merchant.updated: el más reciente (por updatedAt, obligatorio en el contrato) gana.
+
+    `verified` se guarda tal cual (puede volver a false si se revoca) y descriptions.py lo exige.
+    Si el dueño borró su cuenta, el comercio queda sin vínculo personal aunque esta entrega llegue tarde.
+    """
+    await _store_merchant(d, db, _dt(d["updatedAt"]), d["verified"] is True)
+
+
+async def _merchant_verified(d, e, db):
+    """merchant.verified: es lo único que publica user-service al aprobar un comercio.
+
+    Sin este manejador, un comercio recién aprobado no podía pedir descripciones (403) hasta editar su perfil.
+    Compite por orden con merchant.updated usando verifiedAt: una revocación posterior no se pisa.
+    """
+    await _store_merchant(d, db, _dt(d["verifiedAt"]), True)
 
 
 HANDLERS = {
@@ -163,6 +176,7 @@ HANDLERS = {
     "location_consent.granted": lambda d, e, db: _consent(db, d["userId"], d["grantedAt"], True),
     "location_consent.revoked": lambda d, e, db: _consent(db, d["userId"], d["revokedAt"], False),
     "merchant.updated": _merchant_updated,
+    "merchant.verified": _merchant_verified,
     "event.published": _catalog_snapshot,
     "event.updated": _catalog_snapshot,
     "event.cancelled": lambda d, e, db: _set_status(db, d["eventId"], "cancelled"),
