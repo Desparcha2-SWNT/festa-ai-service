@@ -70,7 +70,7 @@ async def test_groq_request_and_usage(monkeypatch):
     assert seen["body"]["model"] == "openai/gpt-oss-120b"
     assert seen["body"]["messages"][0] == {"role": "system", "content": "Responde SOLO con JSON"}
     assert seen["body"]["response_format"] == {"type": "json_object"}
-    assert seen["body"]["max_completion_tokens"] == 500
+    assert seen["body"]["max_completion_tokens"] == 500 + llm.REASONING_HEADROOM
     assert (result.provider, result.input_tokens, result.output_tokens) == ("groq", 12, 7)
     assert llm.parse_json(result.text) == {"reply": "hola", "eventIds": []}
 
