@@ -60,10 +60,25 @@ jobs:
         run: ruff check app tests
 
       - name: Pruebas
-        run: python -m pytest -q --junitxml=test-results/junit.xml
+        run: python -m pytest -q --junitxml=test-results/junit.xml --cov=app --cov-branch --cov-report=term --cov-report=json:coverage.json
         env:
           FESTA_CONTRACTS_DIR: ${{ github.workspace }}/.festa-infra/contracts
           TEST_MONGO_URL: mongodb://localhost:27017/ai_test
+
+      - name: Resumen de cobertura
+        if: always() && hashFiles('coverage.json') != ''
+        run: |
+          python - >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import json
+          t = json.load(open("coverage.json"))["totals"]
+          print("## Cobertura de pruebas (app/)
+")
+          print("| Métrica | Cobertura | Cubiertas |")
+          print("|---|---|---|")
+          print(f"| Líneas | {100 * t['covered_lines'] / max(t['num_statements'], 1):.2f} % | {t['covered_lines']} de {t['num_statements']} |")
+          print(f"| Ramas | {100 * t['covered_branches'] / max(t['num_branches'], 1):.2f} % | {t['covered_branches']} de {t['num_branches']} |")
+          print(f"| Total (líneas y ramas) | {t['percent_covered']:.2f} % | |")
+          EOF
 
       - name: Publicar resultados de pruebas en el PR
         if: always()
