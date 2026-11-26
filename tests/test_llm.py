@@ -63,11 +63,11 @@ async def test_groq_request_and_usage(monkeypatch):
         )
 
     _mock_provider(monkeypatch, handler)
-    result = await llm.complete("Responde SOLO con JSON", [{"role": "user", "content": "hola"}], "llama-3.3-70b-versatile", json_output=True, max_tokens=500)
+    result = await llm.complete("Responde SOLO con JSON", [{"role": "user", "content": "hola"}], "openai/gpt-oss-120b", json_output=True, max_tokens=500)
 
     assert seen["url"] == "https://api.groq.com/openai/v1/chat/completions"
     assert seen["auth"] == "Bearer gsk-test"
-    assert seen["body"]["model"] == "llama-3.3-70b-versatile"
+    assert seen["body"]["model"] == "openai/gpt-oss-120b"
     assert seen["body"]["messages"][0] == {"role": "system", "content": "Responde SOLO con JSON"}
     assert seen["body"]["response_format"] == {"type": "json_object"}
     assert seen["body"]["max_completion_tokens"] == 500
@@ -96,3 +96,49 @@ def test_gemini_is_no_longer_a_provider():
 
     assert Settings(llm_provider="groq", llm_api_key="gsk").effective_provider == "groq"
     assert "gemini" not in llm._OPENAI_COMPATIBLE
+
+
+async def test_gpt_oss_low_reasoning_hidden_with_headroom(monkeypatch):
+    import json
+
+    import httpx
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1}})
+
+    _mock_provider(monkeypatch, handler)
+    await llm.complete("s", [{"role": "user", "content": "hola"}], "openai/gpt-oss-120b", json_output=True, max_tokens=500)
+
+    assert seen["body"]["reasoning_effort"] == "low"
+    assert seen["body"]["include_reasoning"] is False
+    assert seen["body"]["max_completion_tokens"] == 500 + llm.REASONING_HEADROOM
+
+
+async def test_non_reasoning_model_has_no_reasoning_params(monkeypatch):
+    import json
+
+    import httpx
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": "hola"}}]})
+
+    _mock_provider(monkeypatch, handler)
+    await llm.complete("s", [{"role": "user", "content": "hola"}], "otro-modelo", max_tokens=400)
+
+    assert "reasoning_effort" not in seen["body"] and seen["body"]["max_completion_tokens"] == 400
+
+
+async def test_provider_error_is_logged_with_reason(monkeypatch, caplog):
+    import httpx
+
+    _mock_provider(monkeypatch, lambda request: httpx.Response(404, json={"error": {"code": "model_not_found"}}))
+    with caplog.at_level("WARNING", logger="ai-service"), pytest.raises(llm.LLMError):
+        await llm.complete("s", [{"role": "user", "content": "hola"}], "modelo-retirado")
+
+    assert "groq 404" in caplog.text and "model_not_found" in caplog.text and "modelo-retirado" in caplog.text
