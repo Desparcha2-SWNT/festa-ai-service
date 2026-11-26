@@ -54,10 +54,8 @@ async def _complete(system: str, messages: list[Message], model: str, *, json_ou
         if provider == "fake":
             return _fake(system, messages, model, json_output)
         async with httpx.AsyncClient(timeout=settings.llm_timeout_s) as http:
-            if provider == "gemini":
-                return await _gemini(http, settings.llm_api_key, system, messages, model, json_output, max_tokens)
-            if provider == "openai":
-                return await _openai(http, settings.llm_api_key, system, messages, model, json_output, max_tokens)
+            if provider in _OPENAI_COMPATIBLE:
+                return await _openai(http, provider, settings.llm_api_key, system, messages, model, json_output, max_tokens)
             if provider == "ollama":
                 return await _ollama(http, settings.ollama_url, system, messages, model, json_output, max_tokens)
         if provider == "anthropic":
@@ -69,47 +67,35 @@ async def _complete(system: str, messages: list[Message], model: str, *, json_ou
     raise LLMError(f"LLM_PROVIDER desconocido: {provider}")
 
 
-async def _gemini(http, key, system, messages, model, json_output, max_tokens) -> LLMResult:
-    body = {
-        "systemInstruction": {"parts": [{"text": system}]},
-        "contents": [
-            {"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]} for m in messages
-        ],
-        "generationConfig": {"maxOutputTokens": max_tokens, **({"responseMimeType": "application/json"} if json_output else {})},
-    }
-    res = await http.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-        headers={"x-goog-api-key": key},
-        json=body,
-    )
-    if res.status_code != 200:
-        raise LLMError(f"gemini {res.status_code}: {res.text[:300]}")
-    data = res.json()
-    try:
-        text = "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
-    except (KeyError, IndexError) as err:
-        raise LLMError(f"gemini sin texto: {str(data)[:300]}") from err
-    usage = data.get("usageMetadata", {})
-    return LLMResult(text, "gemini", model, usage.get("promptTokenCount", 0), usage.get("candidatesTokenCount", 0))
+# Proveedores con la API de chat de OpenAI. Groq es el predeterminado (RNF8: bajo costo).
+_OPENAI_COMPATIBLE = {
+    "groq": "https://api.groq.com/openai/v1",
+    "openai": "https://api.openai.com/v1",
+}
 
 
-async def _openai(http, key, system, messages, model, json_output, max_tokens) -> LLMResult:
+async def _openai(http, provider, key, system, messages, model, json_output, max_tokens) -> LLMResult:
     body = {
         "model": model,
         "messages": [{"role": "system", "content": system}, *messages],
         "max_completion_tokens": max_tokens,
         **({"response_format": {"type": "json_object"}} if json_output else {}),
     }
-    res = await http.post("https://api.openai.com/v1/chat/completions", headers={"Authorization": f"Bearer {key}"}, json=body)
+    url = f"{_OPENAI_COMPATIBLE[provider]}/chat/completions"
+    res = await http.post(url, headers={"Authorization": f"Bearer {key}"}, json=body)
     if res.status_code != 200:
-        raise LLMError(f"openai {res.status_code}: {res.text[:300]}")
+        raise LLMError(f"{provider} {res.status_code}: {res.text[:300]}")
     data = res.json()
     usage = data.get("usage", {})
-    return LLMResult(data["choices"][0]["message"]["content"] or "", "openai", model, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
+    try:
+        text = data["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError) as err:
+        raise LLMError(f"{provider} sin texto: {str(data)[:300]}") from err
+    return LLMResult(text, provider, model, usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0))
 
 
 async def _ollama(http, base_url, system, messages, model, json_output, max_tokens) -> LLMResult:
-    # num_predict es el tope de tokens de salida en Ollama (equivale a maxOutputTokens de Gemini).
+    # num_predict es el tope de tokens de salida en Ollama (equivale a max_completion_tokens).
     body = {
         "model": model,
         "stream": False,
