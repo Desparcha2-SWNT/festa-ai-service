@@ -30,7 +30,7 @@ El cliente las llama con el prefijo `/api` (Kong lo quita y valida el JWT).
 ## Proveedores de IA
 
 `LLM_PROVIDER` = `groq` (por defecto), `openai`, `anthropic` u `ollama`; el modelo se elige con `LLM_CHAT_MODEL` y
-`LLM_DESCRIPTION_MODEL`. Sugeridos por costo (RNF8): `llama-3.3-70b-versatile` (Groq), `gpt-4o-mini`, `claude-haiku-5-5`.
+`LLM_DESCRIPTION_MODEL`. Sugeridos por costo (RNF8): `openai/gpt-oss-120b` (Groq), `gpt-4o-mini`, `claude-haiku-5-5`.
 Sin `LLM_API_KEY` el servicio usa el proveedor local **`fake`**: respuestas de ejemplo sin costo, para desarrollo,
 pruebas y demos.
 

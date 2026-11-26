@@ -7,12 +7,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from dataclasses import dataclass
 
 import httpx
 
 from .config import get_settings
+
+log = logging.getLogger("ai-service")
 
 
 class LLMError(Exception):
@@ -44,7 +47,12 @@ def _semaphore() -> asyncio.Semaphore:
 
 async def complete(system: str, messages: list[Message], model: str, *, json_output: bool = False, max_tokens: int = 1024) -> LLMResult:
     async with _semaphore():
-        return await _complete(system, messages, model, json_output=json_output, max_tokens=max_tokens)
+        try:
+            return await _complete(system, messages, model, json_output=json_output, max_tokens=max_tokens)
+        except LLMError as err:
+            # La API responde un 503 genérico: el motivo (código y mensaje del proveedor) queda en el log.
+            log.warning("falla del proveedor de IA (modelo %s): %s", model, err)
+            raise
 
 
 async def _complete(system: str, messages: list[Message], model: str, *, json_output: bool, max_tokens: int) -> LLMResult:
@@ -74,6 +82,13 @@ _OPENAI_COMPATIBLE = {
 }
 
 
+REASONING_HEADROOM = 1024
+
+
+def _reasons(model: str) -> bool:
+    return model.startswith("openai/gpt-oss")
+
+
 async def _openai(http, provider, key, system, messages, model, json_output, max_tokens) -> LLMResult:
     body = {
         "model": model,
@@ -81,6 +96,10 @@ async def _openai(http, provider, key, system, messages, model, json_output, max
         "max_completion_tokens": max_tokens,
         **({"response_format": {"type": "json_object"}} if json_output else {}),
     }
+    if _reasons(model):
+        # gpt-oss razona antes de responder y esos tokens cuentan en el tope: razonamiento bajo, sin devolverlo,
+        # y margen fijo para que el JSON no salga cortado. Lo que se factura sigue en usage.completion_tokens.
+        body.update(reasoning_effort="low", include_reasoning=False, max_completion_tokens=max_tokens + REASONING_HEADROOM)
     url = f"{_OPENAI_COMPATIBLE[provider]}/chat/completions"
     res = await http.post(url, headers={"Authorization": f"Bearer {key}"}, json=body)
     if res.status_code != 200:
