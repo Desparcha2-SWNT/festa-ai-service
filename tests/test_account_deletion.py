@@ -181,6 +181,39 @@ async def test_descripcion_exige_comercio_verificado_y_respeta_la_revocacion(mon
     assert revoked.status_code == 403
 
 
+def _verified(**extra) -> dict:
+    data = contract_example("user", "merchant.verified")
+    data.update(userId=USER, **extra)
+    return data
+
+
+async def test_comercio_recien_aprobado_puede_pedir_descripciones(mongo_db):
+    # Al aprobar, user-service solo publica merchant.verified: antes ai respondía 403 hasta que el comercio editara su perfil.
+    data = _verified(verifiedAt="2026-11-17T10:00:00Z")
+    await HANDLERS["merchant.verified"](data, {}, mongo_db)
+    async with client() as c:
+        res = await c.post("/ai/descriptions", json=_description_body(merchantId=data["merchantId"]))
+    stored = await mongo_db.merchants.find_one({"_id": data["merchantId"]})
+    assert res.status_code == 200
+    assert stored["verified"] is True and stored["userId"] == USER and stored["businessName"] == data["businessName"]
+
+
+async def test_verificacion_atrasada_no_pisa_una_revocacion_posterior(mongo_db):
+    data = _verified(verifiedAt="2026-11-17T10:00:00Z")
+    await HANDLERS["merchant.updated"](_merchant(merchantId=data["merchantId"], verified=False, updatedAt="2026-11-17T11:00:00Z"), {}, mongo_db)
+    await HANDLERS["merchant.verified"](data, {}, mongo_db)
+    stored = await mongo_db.merchants.find_one({"_id": data["merchantId"]})
+    assert stored["verified"] is False
+
+
+async def test_verificacion_tras_el_borrado_no_revincula_el_comercio(mongo_db):
+    await HANDLERS["account.deleted"](DELETED, {}, mongo_db)
+    data = _verified(verifiedAt="2026-11-17T13:00:00Z")
+    await HANDLERS["merchant.verified"](data, {}, mongo_db)
+    stored = await mongo_db.merchants.find_one({"_id": data["merchantId"]})
+    assert stored is None or (stored["userId"] is None and stored["verified"] is False)
+
+
 async def test_anthropic_respeta_el_tope_de_tokens_de_quien_llama(monkeypatch):
     seen = {}
 
