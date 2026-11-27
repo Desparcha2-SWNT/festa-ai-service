@@ -44,7 +44,8 @@ class DescriptionRequest(BaseModel):
     category: Literal["cultural", "musical", "deportivo", "gastronomico"] | None = None
     startsAt: str | None = Field(default=None, max_length=40)
     notes: str | None = Field(default=None, max_length=300)
-    merchantId: str | None = Field(default=None, pattern=UUID_PATTERN)
+    # RF9: solo un comercio verificado genera descripciones; sin comercio no hay llamada al LLM.
+    merchantId: str = Field(pattern=UUID_PATTERN)
 
 
 class DescriptionResponse(BaseModel):
@@ -103,17 +104,17 @@ async def generate_description(body: DescriptionRequest, request: Request, user:
     if existing and existing["claimedAt"] > now - timedelta(seconds=CLAIM_SECONDS):
         raise _busy()  # otra petición la está generando ahora mismo
 
+    # RF9 es para comercios: el comercio debe ser del usuario y estar verificado hoy (merchant.updated puede
+    # revocarlo). Va antes del límite y de la reclamación para que una cuenta sin comercio no gaste cupo ni LLM.
+    merchant = await db.merchants.find_one({"_id": canonical(body.merchantId), "userId": user.user_id, "verified": True})
+    if merchant is None:
+        raise HTTPException(status_code=403, detail="el comercio no es tuyo o no está verificado")
+
     # Cada descripción nueva es una llamada al LLM: se limita por usuario (RNF8).
     allowed, retry_after = await ratelimit.hit(user.user_id, scope="descriptions")
     if not allowed:
         raise HTTPException(status_code=429, detail="vas muy rápido, espera un momento", headers={"Retry-After": str(retry_after)})
 
-    merchant = None
-    if body.merchantId:
-        # Solo un comercio propio y verificado hoy: merchant.updated puede revocar la verificación.
-        merchant = await db.merchants.find_one({"_id": canonical(body.merchantId), "userId": user.user_id, "verified": True})
-        if merchant is None:
-            raise HTTPException(status_code=403, detail="el comercio no es tuyo o no está verificado")
 
     # Token propio de este intento: solo quien lo tiene puede finalizar o liberar la reclamación.
     token = str(uuid.uuid4())
@@ -132,7 +133,7 @@ async def generate_description(body: DescriptionRequest, request: Request, user:
             await db.descriptions.insert_one({
                 "_id": request_id, "requestedBy": user.user_id, "draftId": draft, "status": "generating",
                 "claimedAt": now, "claimToken": token,
-                "merchantId": canonical(body.merchantId) if body.merchantId else None, "createdAt": now,
+                "merchantId": canonical(body.merchantId), "createdAt": now,
             })
         except DuplicateKeyError as err:
             raise _busy() from err  # otra petición reclamó el borrador en el mismo instante
@@ -157,7 +158,7 @@ async def generate_description(body: DescriptionRequest, request: Request, user:
         payload={
             "requestId": request_id,
             "requestedBy": user.user_id,
-            **({"merchantId": canonical(body.merchantId)} if body.merchantId else {}),
+            "merchantId": canonical(body.merchantId),
             "draftId": draft,
             "provider": result.provider[:30],
             "model": result.model[:60],
