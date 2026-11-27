@@ -61,3 +61,15 @@ async def mongo_db():
     await database.client.drop_database(database.name)
     dbmod.set_db_for_tests(None)
     await client.close()
+
+
+async def verified_merchant(db, user_id: str) -> str:
+    """Copia local de un comercio verificado de `user_id` (lo que deja merchant.verified). Devuelve su id."""
+    import uuid
+    from datetime import UTC, datetime
+
+    merchant_id = str(uuid.uuid4())
+    await db.merchants.insert_one({"_id": merchant_id, "userId": user_id, "businessName": "Café La Escuela",
+                                   "category": "gastronomico", "place": "Bloque G", "verified": True,
+                                   "updatedAt": datetime.now(UTC)})
+    return merchant_id

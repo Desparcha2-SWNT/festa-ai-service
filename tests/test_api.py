@@ -9,7 +9,7 @@ from app import ratelimit
 from app.main import create_app
 from app.messaging.handlers import HANDLERS
 
-from .conftest import HAS_CONTRACTS, contract_example, token, validate_contract
+from .conftest import HAS_CONTRACTS, contract_example, token, validate_contract, verified_merchant
 
 USER = "0b9c7d6e-5f4a-4b3c-8d2e-1a0b9c8d7e6f"
 OTHER = "2b9c7d6e-5f4a-4b3c-8d2e-1a0b9c8d7e6f"
@@ -38,7 +38,8 @@ async def test_requires_token(mongo_db):
 
 async def test_rf9_description_generated_once_and_contract(mongo_db):
     draft = str(uuid.uuid4())
-    body = {"draftId": draft, "name": "Noche de jazz", "location": "Bloque G", "activityType": "concierto en vivo"}
+    body = {"draftId": draft, "name": "Noche de jazz", "location": "Bloque G", "activityType": "concierto en vivo",
+            "merchantId": await verified_merchant(mongo_db, USER)}
     async with client() as c:
         first = await c.post("/ai/descriptions", json=body)
         second = await c.post("/ai/descriptions", json=body)
@@ -56,6 +57,39 @@ async def test_rf9_rejects_foreign_merchant(mongo_db):
             "draftId": str(uuid.uuid4()), "name": "abc", "location": "x y", "activityType": "taller", "merchantId": str(uuid.uuid4()),
         })
     assert res.status_code == 403
+
+
+async def _no_llm(*_a, **_k):
+    raise AssertionError("no debía llamarse al LLM")
+
+
+async def test_rf9_sin_comercio_no_genera_ni_llama_al_llm(mongo_db, monkeypatch):
+    # RF9 es solo para comercios verificados: sin merchantId la petición no es válida y nunca llega al LLM.
+    from app import llm
+
+    monkeypatch.setattr(llm, "complete", _no_llm)
+    async with client() as c:
+        res = await c.post("/ai/descriptions", json={
+            "draftId": str(uuid.uuid4()), "name": "abc", "location": "x y", "activityType": "taller"})
+    assert res.status_code == 422
+    assert await mongo_db.descriptions.count_documents({}) == 0
+
+
+async def test_rf9_comercio_no_verificado_o_ajeno_no_gasta_cupo(mongo_db, monkeypatch):
+    from app import llm
+
+    monkeypatch.setattr(llm, "complete", _no_llm)
+    monkeypatch.setattr(ratelimit, "_local", {})
+    pending = await verified_merchant(mongo_db, USER)
+    await mongo_db.merchants.update_one({"_id": pending}, {"$set": {"verified": False}})
+    foreign = await verified_merchant(mongo_db, OTHER)
+    async with client() as c:
+        codes = [(await c.post("/ai/descriptions", json={
+            "draftId": str(uuid.uuid4()), "name": "abc", "location": "x y", "activityType": "taller", "merchantId": m,
+        })).status_code for m in [pending, foreign] * 4]
+    # 8 rechazos sin agotar el límite de 5 por minuto: la verificación va antes del cupo.
+    assert codes == [403] * 8
+    assert await mongo_db.descriptions.count_documents({}) == 0
 
 
 async def test_rf8_recommends_only_real_upcoming_events(mongo_db):
