@@ -13,7 +13,7 @@ from app import llm, ratelimit
 from app.messaging import handlers
 from app.messaging.handlers import HANDLERS
 
-from .conftest import HAS_CONTRACTS, contract_example
+from .conftest import HAS_CONTRACTS, contract_example, verified_merchant
 from .test_api import USER, client
 
 pytestmark = pytest.mark.skipif(not HAS_CONTRACTS, reason="sin festa-infra/contracts")
@@ -66,7 +66,7 @@ async def test_chat_en_curso_cuando_se_borra_la_cuenta_no_deja_historial_ni_mens
 
 async def test_descripcion_en_curso_cuando_se_borra_la_cuenta_queda_anonima_y_sin_mensaje(mongo_db, monkeypatch):
     _llm_that_runs(monkeypatch, lambda: HANDLERS["account.deleted"](DELETED, {}, mongo_db))
-    body = _description_body()
+    body = _description_body(merchantId=await verified_merchant(mongo_db, USER))
     async with client() as c:
         res = await c.post("/ai/descriptions", json=body)
     assert res.status_code == 403
@@ -78,7 +78,8 @@ async def test_descripcion_en_curso_cuando_se_borra_la_cuenta_queda_anonima_y_si
 async def test_account_deleted_cancela_mensajes_pendientes_y_sin_publicar(mongo_db):
     async with client() as c:
         assert (await c.post("/ai/chat", json={"message": "hola"})).status_code == 200
-        assert (await c.post("/ai/descriptions", json=_description_body())).status_code == 200
+        merchant = await verified_merchant(mongo_db, USER)
+        assert (await c.post("/ai/descriptions", json=_description_body(merchantId=merchant))).status_code == 200
     # Uno ya publicado (lo atiende cada consumidor con su account.deleted) y uno pendiente dentro del documento.
     await mongo_db.outbox.update_one({"routingKey": "recommendation.served"}, {"$set": {"sentAt": "ya"}})
     pending = {"eventId": str(uuid.uuid4()), "payload": {"requestedBy": USER}}

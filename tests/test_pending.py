@@ -7,8 +7,8 @@ import pytest
 from app import chat, descriptions, ratelimit
 from app.messaging.pending import relay_stuck
 
-from .conftest import HAS_CONTRACTS, validate_contract
-from .test_api import client, publish_event
+from .conftest import HAS_CONTRACTS, validate_contract, verified_merchant
+from .test_api import USER, client, publish_event
 
 pytestmark = pytest.mark.skipif(not HAS_CONTRACTS, reason="sin festa-infra/contracts")
 
@@ -23,7 +23,8 @@ def _fresh_limiter(monkeypatch):
 
 
 async def test_descripcion_guardada_sin_copiar_al_outbox_se_repara_en_la_siguiente_peticion(mongo_db, monkeypatch):
-    body = {"draftId": str(uuid.uuid4()), "name": "Noche de jazz", "location": "Bloque G", "activityType": "concierto"}
+    body = {"draftId": str(uuid.uuid4()), "name": "Noche de jazz", "location": "Bloque G", "activityType": "concierto",
+            "merchantId": await verified_merchant(mongo_db, USER)}
     original_relay = descriptions.relay
     monkeypatch.setattr(descriptions, "relay", _crash)
     async with client() as c:
@@ -66,7 +67,8 @@ async def test_turno_de_chat_guardado_sin_copiar_lo_recupera_el_barrido(mongo_db
 
 async def test_copiar_dos_veces_no_duplica_el_mensaje(mongo_db):
     async with client() as c:
-        res = await c.post("/ai/descriptions", json={"draftId": str(uuid.uuid4()), "name": "Taller", "location": "Bloque B", "activityType": "taller"})
+        res = await c.post("/ai/descriptions", json={"draftId": str(uuid.uuid4()), "name": "Taller", "location": "Bloque B",
+                                                     "activityType": "taller", "merchantId": await verified_merchant(mongo_db, USER)})
     assert res.status_code == 200
     row = await mongo_db.outbox.find_one({"routingKey": "description.generated"})
     # Simula que el barrido y la petición copiaron el mismo pendiente.

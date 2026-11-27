@@ -25,7 +25,7 @@ def test_chat_rechaza_session_id_que_no_es_uuid():
 
 
 def test_descripcion_rechaza_draft_id_que_no_es_uuid():
-    base = {"name": "Feria", "location": "Bloque G", "activityType": "stand"}
+    base = {"name": "Feria", "location": "Bloque G", "activityType": "stand", "merchantId": str(uuid.uuid4())}
     with pytest.raises(ValidationError):
         DescriptionRequest(draftId="-" * 36, **base)
     assert DescriptionRequest(draftId=str(uuid.uuid4()), **base).draftId
