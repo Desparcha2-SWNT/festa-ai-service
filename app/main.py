@@ -32,6 +32,7 @@ async def lifespan(app: FastAPI):
         from .messaging.supervisor import Messaging
 
         messaging = Messaging()
+        app.state.messaging = messaging
         await messaging.start()
     log.info("festa-ai-service arriba en el puerto %s con %s", settings.port, settings.effective_provider)
     yield
@@ -44,6 +45,7 @@ async def lifespan(app: FastAPI):
 def create_app(skip_infra: bool = False) -> FastAPI:
     app = FastAPI(title="festa-ai-service", version="1.0.0", lifespan=lifespan)
     app.state.skip_infra = skip_infra
+    app.state.messaging = None
 
     @app.middleware("http")
     async def metrics(request: Request, call_next):
@@ -61,6 +63,10 @@ def create_app(skip_infra: bool = False) -> FastAPI:
 
     @app.get("/health")
     async def health():
+        # Si la mensajería lleva caída demasiado, 503: el balanceador marca la tarea y ECS la reemplaza.
+        messaging = getattr(app.state, "messaging", None)
+        if messaging is not None and not messaging.healthy():
+            return JSONResponse(status_code=503, content={"status": "messaging-down", "downForSeconds": round(messaging.down_for())})
         return {"status": "ok", "llmProvider": get_settings().effective_provider}
 
     @app.get("/metrics")
