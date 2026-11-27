@@ -5,7 +5,7 @@
 FROM python:3.12-slim AS test
 WORKDIR /build
 COPY requirements.txt requirements-dev.txt ./
-RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements-dev.txt
+RUN --mount=type=cache,target=/root/.cache/pip pip install --only-binary :all: -r requirements-dev.txt
 COPY . .
 COPY --from=contracts . /contracts
 # Las pruebas que no necesitan Mongo corren en el build: si fallan, no hay imagen.
@@ -15,7 +15,7 @@ FROM python:3.12-slim
 RUN useradd --system --create-home festa
 WORKDIR /app
 COPY requirements.txt ./
-RUN --mount=type=cache,target=/root/.cache/pip pip install -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip pip install --only-binary :all: -r requirements.txt
 COPY --from=test /build/.tests-ok /tmp/.tests-ok
 COPY app ./app
 # El inbox valida los mensajes contra estos esquemas en runtime.
