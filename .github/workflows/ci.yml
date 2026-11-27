@@ -39,6 +39,8 @@ jobs:
         ports: ["27017:27017"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
 
       - name: Descargar contratos de festa-infra
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -60,7 +62,7 @@ jobs:
         run: ruff check app tests
 
       - name: Pruebas
-        run: python -m pytest -q --junitxml=test-results/junit.xml --cov=app --cov-branch --cov-report=term --cov-report=json:coverage.json
+        run: python -m pytest -q --junitxml=test-results/junit.xml --cov=app --cov-branch --cov-report=term --cov-report=json:coverage.json --cov-report=xml:coverage.xml
         env:
           FESTA_CONTRACTS_DIR: ${{ github.workspace }}/.festa-infra/contracts
           TEST_MONGO_URL: mongodb://localhost:27017/ai_test
@@ -79,6 +81,22 @@ jobs:
           print(f"| Ramas | {100 * t['covered_branches'] / max(t['num_branches'], 1):.2f} % | {t['covered_branches']} de {t['num_branches']} |")
           print(f"| Total (líneas y ramas) | {t['percent_covered']:.2f} % | |")
           EOF
+
+      # Análisis de SonarCloud desde el CI, con la cobertura (coverage.xml de pytest-cov).
+      # Requiere SONAR_TOKEN (secreto de la organización) y el análisis automático apagado en el proyecto.
+      - name: Análisis de SonarCloud
+        if: always() && hashFiles('coverage.xml') != ''
+        uses: SonarSource/sonarqube-scan-action@70bad232163b09d998ea0707ee80c0ec80798c16 # v8.5.1
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.organization=desparcha2-swnt
+            -Dsonar.projectKey=Desparcha2-SWNT_festa-ai-service
+            -Dsonar.sources=app
+            -Dsonar.tests=tests
+            -Dsonar.python.version=3.12
+            -Dsonar.python.coverage.reportPaths=coverage.xml
 
       - name: Publicar resultados de pruebas en el PR
         if: always()
