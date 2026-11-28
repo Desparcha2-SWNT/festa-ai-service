@@ -61,3 +61,11 @@ async def mongo_db():
     await database.client.drop_database(database.name)
     dbmod.set_db_for_tests(None)
     await client.close()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_daily_limit(monkeypatch):
+    """El tope diario es por proceso sin Redis: cada prueba empieza con el contador del día en cero."""
+    from app import ratelimit
+
+    monkeypatch.setattr(ratelimit, "_local_day", {})

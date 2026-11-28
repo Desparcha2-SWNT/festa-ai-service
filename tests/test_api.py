@@ -93,6 +93,29 @@ async def test_rnf8_rate_limit(mongo_db, monkeypatch):
     assert codes[:10] == [200] * 10 and codes[10] == 429
 
 
+async def test_rnf8_tope_diario_de_chat(mongo_db, monkeypatch):
+    # El límite por minuto se reinicia cada minuto; el diario no: pasado el tope, 429 hasta el día siguiente.
+    from dataclasses import replace
+
+    from app.config import get_settings
+
+    monkeypatch.setattr(ratelimit, "_local", {})
+    capped = replace(get_settings(), chat_rate_limit_per_day=3)
+    monkeypatch.setattr(ratelimit, "get_settings", lambda: capped)
+    async with client() as c:
+        responses = [await c.post("/ai/chat", json={"message": "hola"}) for _ in range(4)]
+    assert [r.status_code for r in responses] == [200, 200, 200, 429]
+    assert "hoy" in responses[3].json()["detail"]
+    assert 0 < int(responses[3].headers["Retry-After"]) <= 86400
+
+
+async def test_tope_diario_es_por_usuario(monkeypatch):
+    monkeypatch.setattr(ratelimit, "_local_day", {})
+    assert [(await ratelimit.hit_daily("u1", limit=1))[0] for _ in range(2)] == [True, False]
+    assert (await ratelimit.hit_daily("u2", limit=1))[0] is True
+    assert (await ratelimit.hit_daily("u1", scope="descriptions", limit=1))[0] is True
+
+
 async def test_account_deleted_removes_history(mongo_db, monkeypatch):
     # El límite por minuto no debe contaminar esta prueba: se reinicia antes de crear la conversación.
     monkeypatch.setattr(ratelimit, "_local", {})
