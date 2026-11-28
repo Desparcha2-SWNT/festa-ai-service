@@ -1,4 +1,4 @@
-"""RNF8: límite de solicitudes de chat por usuario por minuto (ventana fija en Redis)."""
+"""RNF8: límite de solicitudes de IA por usuario, por minuto y por día (ventanas fijas en Redis)."""
 import time
 
 from redis import asyncio as aioredis
@@ -43,4 +43,27 @@ async def hit(user_id: str, limit: int | None = None, scope: str = "chat") -> tu
             _local.pop(k, None)
         _local[key] = _local.get(key, 0) + 1
         count = _local[key]
+    return count <= limit, retry_after
+
+
+_local_day: dict[str, int] = {}
+
+
+async def hit_daily(user_id: str, scope: str = "chat", limit: int | None = None) -> tuple[bool, int]:
+    """Cuenta una solicitud en la ventana del día (UTC). Devuelve (permitida, segundos hasta el día siguiente)."""
+    if limit is None:
+        limit = get_settings().chat_rate_limit_per_day if scope == "chat" else get_settings().description_rate_limit_per_day
+    now = time.time()
+    day = int(now // 86400)
+    key = f"ai:{scope}:day:{user_id}:{day}"
+    retry_after = 86400 - int(now % 86400)
+    if _redis is not None:
+        count = await _redis.incr(key)
+        if count == 1:
+            await _redis.expire(key, 90000)
+    else:
+        for k in [k for k in _local_day if not k.endswith(f":{day}")]:
+            _local_day.pop(k, None)
+        _local_day[key] = _local_day.get(key, 0) + 1
+        count = _local_day[key]
     return count <= limit, retry_after

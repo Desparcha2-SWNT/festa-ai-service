@@ -107,6 +107,9 @@ async def generate_description(body: DescriptionRequest, request: Request, user:
     allowed, retry_after = await ratelimit.hit(user.user_id, scope="descriptions")
     if not allowed:
         raise HTTPException(status_code=429, detail="vas muy rápido, espera un momento", headers={"Retry-After": str(retry_after)})
+    allowed, retry_after = await ratelimit.hit_daily(user.user_id, scope="descriptions")
+    if not allowed:
+        raise HTTPException(status_code=429, detail="llegaste al límite de hoy, vuelve mañana", headers={"Retry-After": str(retry_after)})
 
     merchant = None
     if body.merchantId:

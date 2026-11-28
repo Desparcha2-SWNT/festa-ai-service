@@ -159,6 +159,9 @@ async def chat(body: ChatRequest, request: Request, response: Response, user: Pr
     allowed, retry_after = await ratelimit.hit(user.user_id)
     if not allowed:
         raise HTTPException(status_code=429, detail="vas muy rápido, espera un momento", headers={"Retry-After": str(retry_after)})
+    allowed, retry_after = await ratelimit.hit_daily(user.user_id)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="llegaste al límite de hoy, vuelve mañana", headers={"Retry-After": str(retry_after)})
 
     db = get_db()
     # Generación del historial al empezar: si DELETE /chat/history corre mientras el LLM responde,
