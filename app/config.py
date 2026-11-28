@@ -59,6 +59,11 @@ class Settings:
     chat_rate_limit_per_min: int = int(os.environ.get("AI_CHAT_RATE_LIMIT_PER_MIN", "10"))
     # Descripciones: cada una cuesta una llamada al LLM, así que tiene su propio límite por usuario.
     description_rate_limit_per_min: int = int(os.environ.get("AI_DESCRIPTION_RATE_LIMIT_PER_MIN", "5"))
+    # Tope diario por usuario (auditoría de seguridad, 2026-11-28): el límite por minuto solo frena ráfagas;
+    # sin este tope una cuenta podía hacer ~14.400 chats al día, pagados por el equipo. Es un techo de
+    # seguridad del costo, no el modelo de cobro del chat (decisión del equipo, decision_chat_publico.md).
+    chat_rate_limit_per_day: int = int(os.environ.get("AI_CHAT_RATE_LIMIT_PER_DAY", "100"))
+    description_rate_limit_per_day: int = int(os.environ.get("AI_DESCRIPTION_RATE_LIMIT_PER_DAY", "20"))
     # Tope de llamadas simultáneas al proveedor en este proceso (control de costo y de cuota).
     llm_max_concurrency: int = int(os.environ.get("AI_LLM_MAX_CONCURRENCY", "4"))
     # Cuántos eventos candidatos se le pasan al modelo en cada turno.
